@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/ort/
+# Large or checkpoint-derived assets; regenerate with tools/export_web_assets.py
+public/assets/reference/models/
+public/assets/reference/gait/
+public/assets/ctrl/

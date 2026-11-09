@@ -1,0 +1,23 @@
+{
+  "cases": {
+    "F": {
+      "sample": "samples/fixed/F_transition.json",
+      "model": {
+        "kind": "mjb",
+        "file": "models/F_transition.mjb"
+      },
+      "meta": "models/F_meta.json",
+      "gait": "gait/F.json"
+    },
+    "J": {
+      "sample": "samples/fixed/J_transition.json",
+      "model": {
+        "kind": "mjb",
+        "file": "models/J_transition.mjb"
+      },
+      "meta": "models/J_meta.json",
+      "gait": "gait/J.json"
+    }
+  },
+  "target_speed": 3.0
+}

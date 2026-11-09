@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cheetah baseline lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Cheetah baseline lab</h1>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#reference" data-tab="reference">Reference controllers</a>
+      <a href="#ctrl" data-tab="ctrl">CT-RL baselines</a>
+      <a href="#explain" data-tab="explain">Explainers</a>
+    </nav>
+    <p class="status" id="status" role="status">Starting…</p>
+  </header>
+
+  <main>
+    <section id="sim-view" class="sim">
+      <div class="stage">
+        <canvas id="viewport" aria-label="Side view of the simulated cheetah"></canvas>
+        <div class="legend" id="legend"></div>
+      </div>
+
+      <div class="panels">
+        <div class="panel" id="run-panel">
+          <h2>Run</h2>
+          <div class="grid2">
+            <label>Method <select id="method"></select></label>
+            <label data-only="reference">Case <select id="case"><option value="F">F (fixed course)</option><option value="J">J (drawn course)</option></select></label>
+            <label>Clock <select id="clock"><option value="fixed">Fixed</option><option value="irregular">Irregular</option></select></label>
+            <label data-only="reference">Ghost (recorded run) <select id="ghost"><option value="">None</option></select></label>
+            <label>Target speed <span class="num" id="target-out">3.0 m/s</span><input id="target" type="range" min="0" max="10" step="0.1" value="3"></label>
+            <label>Playback <span class="num" id="scale-out">1×</span><input id="scale" type="range" min="0.1" max="2" step="0.1" value="1"></label>
+          </div>
+          <p class="access" id="access"></p>
+          <div class="buttons">
+            <button id="reset">Reset episode</button>
+            <button id="play" class="primary">Run</button>
+            <button id="step">Step one decision</button>
+          </div>
+          <label class="local">Use your exported assets folder
+            <input id="local-assets" type="file" webkitdirectory multiple>
+          </label>
+          <p class="hint" id="local-assets-out">Optional. Pick your local <code>public/assets</code> folder to use gait files and policies that are not on the deployed site. Files stay in this browser tab.</p>
+        </div>
+
+        <div class="panel" id="perturb-panel">
+          <h2>Perturb</h2>
+          <div class="grid2">
+            <label>Push force <span class="num" id="force-out">150 N</span><input id="force" type="range" min="0" max="600" step="10" value="150"></label>
+            <label>Push duration <span class="num" id="dur-out">0.10 s</span><input id="dur" type="range" min="0.02" max="0.5" step="0.01" value="0.1"></label>
+          </div>
+          <div class="pushpad" role="group" aria-label="Push direction">
+            <button data-push="back">Push backward</button>
+            <button data-push="up">Lift</button>
+            <button data-push="fwd">Push forward</button>
+            <button data-push="pitch">Pitch nose down</button>
+            <button data-push="down">Press down</button>
+            <button data-push="unpitch">Pitch nose up</button>
+          </div>
+          <label>Friction scale <span class="num" id="fric-out">1.00×</span><input id="friction" type="range" min="0.1" max="2" step="0.05" value="1"></label>
+          <p class="hint">Friction scales every geom's sliding coefficient, so contact pairs change consistently.</p>
+        </div>
+      </div>
+
+      <div class="readouts">
+        <div class="panel wide">
+          <h2>Speed</h2>
+          <canvas id="strip" aria-label="Torso speed and target over the last six seconds"></canvas>
+          <table class="nums" id="stats"><tbody></tbody></table>
+        </div>
+        <div class="panel">
+          <h2>Last decision</h2>
+          <table class="nums" id="diag"><tbody></tbody></table>
+          <div class="bars" id="action-bars" aria-label="Normalized actions"></div>
+        </div>
+      </div>
+
+      <div class="readouts">
+        <div class="panel">
+          <h2>Binding self-tests</h2>
+          <ul class="checks" id="selftests"></ul>
+        </div>
+        <div class="panel" data-only="reference">
+          <h2>Golden check against Python samples</h2>
+          <p class="hint">Replays <code>validation/reference_samples</code> through the loaded model and controller port.</p>
+          <div class="buttons"><button id="golden-fixed">Check fixed clock sample</button><button id="golden-irregular">Check irregular clock sample</button></div>
+          <table class="nums" id="golden"><tbody></tbody></table>
+        </div>
+        <div class="panel" data-only="reference">
+          <h2>Recorded Python episode</h2>
+          <table class="nums" id="recorded"><tbody></tbody></table>
+        </div>
+      </div>
+      <ul class="caveats" id="caveats"></ul>
+    </section>
+
+    <section id="explain-view" class="explain" hidden>
+      <div class="explain-list" id="explain-list"></div>
+      <div class="explain-frame" id="explain-frame"></div>
+    </section>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

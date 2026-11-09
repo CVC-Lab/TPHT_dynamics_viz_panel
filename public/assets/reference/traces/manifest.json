@@ -1,0 +1,217 @@
+{
+  "columns": [
+    "time",
+    "h",
+    "q0",
+    "q1",
+    "q2",
+    "q3",
+    "q4",
+    "q5",
+    "q6",
+    "q7",
+    "q8",
+    "v0",
+    "v1",
+    "v2",
+    "v3",
+    "v4",
+    "v5",
+    "v6",
+    "v7",
+    "v8",
+    "a0",
+    "a1",
+    "a2",
+    "a3",
+    "a4",
+    "a5",
+    "progress",
+    "com_speed",
+    "saturation",
+    "weighted_acceleration_residual"
+  ],
+  "dtype": "float32",
+  "list": [
+    {
+      "case": "F",
+      "clock": "fixed",
+      "method": "learned_feedback",
+      "file": "F_fixed_learned_feedback.f32",
+      "rows": 1200,
+      "source": "F_fixed_learned_feedback_100000.json",
+      "source_sha256": "407f5552b24b5cef8ef1077a00481bcfa882d1d5eb332da13af1f1ad7e30fb3a"
+    },
+    {
+      "case": "F",
+      "clock": "fixed",
+      "method": "learned_mpc",
+      "file": "F_fixed_learned_mpc.f32",
+      "rows": 1200,
+      "source": "F_fixed_learned_mpc_100000.json",
+      "source_sha256": "d2562ffeb21d20e5d93049a4a2cac7d58ae32c14a5cb415a71236852b8efaa5c"
+    },
+    {
+      "case": "F",
+      "clock": "fixed",
+      "method": "mujoco_fd_ls",
+      "file": "F_fixed_mujoco_fd_ls.f32",
+      "rows": 1200,
+      "source": "F_fixed_mujoco_fd_ls_100000.json",
+      "source_sha256": "bfe5831ce070c1c371871b8816556a73e857553e7cfb64f29748684dbb45de5c"
+    },
+    {
+      "case": "F",
+      "clock": "fixed",
+      "method": "mujoco_ls",
+      "file": "F_fixed_mujoco_ls.f32",
+      "rows": 1200,
+      "source": "F_fixed_mujoco_ls_100000.json",
+      "source_sha256": "91fee0540a75cdeb4cca73390020df9d6394d3bcf8e857afa029f514daf47326"
+    },
+    {
+      "case": "F",
+      "clock": "fixed",
+      "method": "mujoco_mpc",
+      "file": "F_fixed_mujoco_mpc.f32",
+      "rows": 1200,
+      "source": "F_fixed_mujoco_mpc_100000.json",
+      "source_sha256": "fff6729135c7b8b3a3e42d2b32966c83472796ac5033b627b634766334cc51c2"
+    },
+    {
+      "case": "F",
+      "clock": "irregular",
+      "method": "learned_feedback",
+      "file": "F_irregular_learned_feedback.f32",
+      "rows": 2414,
+      "source": "F_irregular_learned_feedback_100000.json",
+      "source_sha256": "25f83f9ea1a7ebefc1488494ce7152f399ef5b418117e90bbb3f0340e30c4c57"
+    },
+    {
+      "case": "F",
+      "clock": "irregular",
+      "method": "learned_mpc",
+      "file": "F_irregular_learned_mpc.f32",
+      "rows": 2414,
+      "source": "F_irregular_learned_mpc_100000.json",
+      "source_sha256": "2a3c80232ec52e291809d8ca5250de83e5d2bf60673a11ceedcf26837482a718"
+    },
+    {
+      "case": "F",
+      "clock": "irregular",
+      "method": "mujoco_fd_ls",
+      "file": "F_irregular_mujoco_fd_ls.f32",
+      "rows": 2414,
+      "source": "F_irregular_mujoco_fd_ls_100000.json",
+      "source_sha256": "d235d31c16cc8ddf259a2e5d35e2c50851c70bc741ae8715b5294f1929d95222"
+    },
+    {
+      "case": "F",
+      "clock": "irregular",
+      "method": "mujoco_ls",
+      "file": "F_irregular_mujoco_ls.f32",
+      "rows": 2414,
+      "source": "F_irregular_mujoco_ls_100000.json",
+      "source_sha256": "6b06a635d8e1c83173820788f612e5da99603f5a67bc11b3d90dd750d24c4b6f"
+    },
+    {
+      "case": "F",
+      "clock": "irregular",
+      "method": "mujoco_mpc",
+      "file": "F_irregular_mujoco_mpc.f32",
+      "rows": 2414,
+      "source": "F_irregular_mujoco_mpc_100000.json",
+      "source_sha256": "60afb34820211c02c2a533060a31b726cd78ed34c599193b36db4011601b9dbd"
+    },
+    {
+      "case": "J",
+      "clock": "fixed",
+      "method": "learned_feedback",
+      "file": "J_fixed_learned_feedback.f32",
+      "rows": 1200,
+      "source": "J_fixed_learned_feedback_100000.json",
+      "source_sha256": "6878175b7feacd04e5166e4706846458b713a3c2c3f746f718919e0622bee479"
+    },
+    {
+      "case": "J",
+      "clock": "fixed",
+      "method": "learned_mpc",
+      "file": "J_fixed_learned_mpc.f32",
+      "rows": 1200,
+      "source": "J_fixed_learned_mpc_100000.json",
+      "source_sha256": "6d2f47a747c2858892bff5fdeb8d2db05b580471f6d987be92cbc794ccaa29e7"
+    },
+    {
+      "case": "J",
+      "clock": "fixed",
+      "method": "mujoco_fd_ls",
+      "file": "J_fixed_mujoco_fd_ls.f32",
+      "rows": 1200,
+      "source": "J_fixed_mujoco_fd_ls_100000.json",
+      "source_sha256": "29ce88e82c12cbd828e9c7633b3cd5098d179bd33b58207bf6281f3201a98bc0"
+    },
+    {
+      "case": "J",
+      "clock": "fixed",
+      "method": "mujoco_ls",
+      "file": "J_fixed_mujoco_ls.f32",
+      "rows": 1200,
+      "source": "J_fixed_mujoco_ls_100000.json",
+      "source_sha256": "1813b5166d70049db5a902aa6acbb33d91583e9d18b0ff085a6042e603800f7b"
+    },
+    {
+      "case": "J",
+      "clock": "fixed",
+      "method": "mujoco_mpc",
+      "file": "J_fixed_mujoco_mpc.f32",
+      "rows": 1200,
+      "source": "J_fixed_mujoco_mpc_100000.json",
+      "source_sha256": "ea71e7284a25ee86e2fed9bfe39949174de6ab04be903adcf53dae4f16e7ca72"
+    },
+    {
+      "case": "J",
+      "clock": "irregular",
+      "method": "learned_feedback",
+      "file": "J_irregular_learned_feedback.f32",
+      "rows": 2414,
+      "source": "J_irregular_learned_feedback_100000.json",
+      "source_sha256": "346e1363e7091227db43b214e803f3fa35b7f200798cf32656c796bbcc2b4096"
+    },
+    {
+      "case": "J",
+      "clock": "irregular",
+      "method": "learned_mpc",
+      "file": "J_irregular_learned_mpc.f32",
+      "rows": 2414,
+      "source": "J_irregular_learned_mpc_100000.json",
+      "source_sha256": "b75a896e3781587acf7d7e2fa5115d4128757616449172096cc2bf9634d698f6"
+    },
+    {
+      "case": "J",
+      "clock": "irregular",
+      "method": "mujoco_fd_ls",
+      "file": "J_irregular_mujoco_fd_ls.f32",
+      "rows": 2414,
+      "source": "J_irregular_mujoco_fd_ls_100000.json",
+      "source_sha256": "049259c572ce69954141e63941892d96937fd83db84e9bdb2d1da0d2dea72eb4"
+    },
+    {
+      "case": "J",
+      "clock": "irregular",
+      "method": "mujoco_ls",
+      "file": "J_irregular_mujoco_ls.f32",
+      "rows": 2414,
+      "source": "J_irregular_mujoco_ls_100000.json",
+      "source_sha256": "7fc591e70dbaf20233fb6d652c24b286c8b055a4b06c42972ed4569935d2fb54"
+    },
+    {
+      "case": "J",
+      "clock": "irregular",
+      "method": "mujoco_mpc",
+      "file": "J_irregular_mujoco_mpc.f32",
+      "rows": 2414,
+      "source": "J_irregular_mujoco_mpc_100000.json",
+      "source_sha256": "2939e93e99337d56c57bedf5706e368ff1c816ab9b15fee743c15e825f7ee9b8"
+    }
+  ]
+}

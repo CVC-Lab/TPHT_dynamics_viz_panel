@@ -21,9 +21,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The cvcpkg CLI release, pinned by version and sha256 (github.com/cy-pca/cvcpkg releases).
+  # The cvcpkg CLI version, pinned. cvcpkg.org's installer checks the download against the
+  # sha256 the registry recorded for it.
   CVCPKG_VERSION: "2.5.13"
-  CVCPKG_SHA256: "c28b6d3f4446db9503045688032827524f0aac15c0004fd69de43c3d97a30239"
 
 jobs:
   build:
@@ -34,13 +34,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the cvcpkg CLI
+        # The README's step 1, pinned to one version.
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/bin"
-          curl -fsSL -o "$RUNNER_TEMP/bin/cvcpkg" \
-            "https://github.com/cy-pca/cvcpkg/releases/download/cvcpkg-v${CVCPKG_VERSION}/cvcpkg-linux-x86_64"
-          echo "${CVCPKG_SHA256}  $RUNNER_TEMP/bin/cvcpkg" | sha256sum -c -
-          chmod +x "$RUNNER_TEMP/bin/cvcpkg"
+          curl -fsSL https://cvcpkg.org/install.sh \
+            | sh -s -- --install-dir "$RUNNER_TEMP/bin" --version "$CVCPKG_VERSION"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/bin/cvcpkg" --version
 

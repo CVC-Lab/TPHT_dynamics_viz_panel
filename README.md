@@ -23,9 +23,23 @@ Everything comes from [cvcpkg](https://cvcpkg.org) packages. There is no node, n
   - `tpht-viz-panel`: the site;
   - `tpht-lab-cp312`: the native host.
 
-### 1. Get the cvcpkg CLI
+### 1. Install the cvcpkg CLI
 
-Download the release for your OS from <https://github.com/cy-pca/cvcpkg/releases> (2.5.6 or newer), check it against its `.sha256` file, and put it on `PATH` as `cvcpkg`.
+Use the installer that cvcpkg.org serves; you don't need a checkout of the cvcpkg repository. It downloads the newest `cvcpkg` for your OS and checks it against the sha256 the registry recorded. Give it the directory to install the `cvcpkg` binary into:
+
+Linux and macOS:
+
+```bash
+curl -fsSL https://cvcpkg.org/install.sh | sh -s -- --install-dir "$HOME/.local/bin"
+```
+
+Windows (PowerShell):
+
+```powershell
+& ([scriptblock]::Create((irm https://cvcpkg.org/install.ps1))) -InstallDir "$env:LOCALAPPDATA\cvcpkg"
+```
+
+The steps below run `cvcpkg` from `PATH`. The Windows installer adds the directory to your user `PATH`. On Linux and macOS, if the directory is not on `PATH`, the installer prints the `export PATH=...` line to add. Check the install with `cvcpkg --version`. To pin a release, add `--version 2.5.13` (`-Version 2.5.13` on Windows).
 
 ### 2. Install the dependencies into a prefix
 
@@ -103,7 +117,7 @@ The app is fully static: MuJoCo and ONNX Runtime run as WebAssembly in the brows
 
 1. In the repository, open Settings, then Pages, and set Source to **GitHub Actions**.
 2. Push to `main`. `.github/workflows/pages.yml` does the following on an Ubuntu runner, then deploys `share/tpht-viz-panel/`:
-   - downloads the pinned cvcpkg CLI and checks its sha256;
+   - installs cvcpkg 2.5.13 with the step 1 installer;
    - runs steps 2 and 3 above;
    - runs `tpht-lab check` and `tpht-lab test`.
 

@@ -65,7 +65,9 @@ jobs:
         run: '"$PREFIX/bin/tpht-lab" check'
 
       - name: Controller tests in headless Chromium
-        run: '"$PREFIX/bin/tpht-lab" test'
+        # GitHub's ubuntu-24.04 image restricts unprivileged user namespaces, so Chromium
+        # cannot start its sandbox there.
+        run: '"$PREFIX/bin/tpht-lab" test --no-sandbox'
 
       - name: Report what will be published
         run: |

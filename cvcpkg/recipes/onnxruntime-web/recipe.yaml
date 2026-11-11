@@ -13,7 +13,7 @@ recipe:
     ort.wasm.min.mjs and its runtime ort-wasm-simd-threaded.{mjs,wasm}, from the npm package,
     installed into share/onnxruntime-web/ with the package's package.json. The licence and
     third-party notices (not in the npm tarball) come from the onnxruntime repository at tag
-    v1.20.1 and go to share/doc/onnxruntime-web/. The TPHT panel's CT-RL tab runs exported
+    v1.20.1 and go to share/licenses/onnxruntime-web/. The TPHT panel's CT-RL tab runs exported
     policies with it; tools/build_site.py copies it to the site's vendor/ort/.
 
 source:
@@ -45,4 +45,4 @@ package:
     - share/onnxruntime-web/ort-wasm-simd-threaded.mjs
     - share/onnxruntime-web/ort-wasm-simd-threaded.wasm
     - share/onnxruntime-web/package.json
-    - share/doc/onnxruntime-web/
+    - share/licenses/onnxruntime-web/

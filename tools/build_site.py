@@ -100,7 +100,7 @@ def vendor_ort(prefixes: list[Path], out: Path) -> str | None:
     for f in ORT_FILES + ('package.json',):
         if (src / f).is_file():
             shutil.copy2(src / f, dst / f)
-    doc = prefix / 'share' / 'doc' / 'onnxruntime-web'
+    doc = prefix / 'share' / 'licenses' / 'onnxruntime-web'
     for f in ('LICENSE', 'ThirdPartyNotices.txt'):
         if (doc / f).is_file():
             shutil.copy2(doc / f, dst / f)

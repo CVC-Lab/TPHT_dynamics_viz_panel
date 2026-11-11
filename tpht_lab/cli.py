@@ -20,6 +20,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 import webbrowser
 from pathlib import Path
 
@@ -106,20 +107,36 @@ def cmd_test(args) -> int:
     with tempfile.TemporaryDirectory(prefix='tpht-lab-browser-', ignore_cleanup_errors=True) as profile:
         cmd = [browser, '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
                f'--user-data-dir={profile}', base + 'tests/index.html?report=1']
-        if hasattr(os, 'geteuid') and os.geteuid() == 0:
-            cmd.insert(1, '--no-sandbox')  # Chromium refuses to sandbox as root (CI containers)
+        # Chromium refuses to sandbox as root (CI containers), and cannot where unprivileged
+        # user namespaces are off (Ubuntu 23.10+ with AppArmor's restriction, as on GitHub's
+        # ubuntu-24.04 runners): --no-sandbox there. The page is this site, served locally.
+        if args.no_sandbox or (hasattr(os, 'geteuid') and os.geteuid() == 0):
+            cmd.insert(1, '--no-sandbox')
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        report, exited = None, None
+        deadline = time.monotonic() + args.timeout
         try:
-            report = sink.get(timeout=args.timeout)
-        except queue.Empty:
-            report = None
+            while report is None and time.monotonic() < deadline:
+                try:
+                    report = sink.get(timeout=0.5)
+                except queue.Empty:
+                    # A browser that dies (no sandbox, bad flag) will never report: stop now.
+                    # One that exits 0 may have handed the page to another process; keep waiting.
+                    if proc.poll() not in (None, 0):
+                        exited = proc.returncode
+                        break
         finally:
             proc.kill()
             stderr = proc.communicate()[1] or ''
             server.shutdown()
     if report is None:
         sys.stderr.write(stderr[-4000:])
-        print(f'tpht-lab test: no results from the page within {args.timeout:g} s ({browser})')
+        if exited is not None:
+            print(f'tpht-lab test: the browser exited with status {exited} before the page reported ({browser})')
+        else:
+            print(f'tpht-lab test: no results from the page within {args.timeout:g} s ({browser})')
+        if 'No usable sandbox' in stderr:
+            print('tpht-lab test: this system cannot run the Chromium sandbox; rerun with --no-sandbox')
         return 1
     for r in report.get('results', []):
         detail = f' - {r["detail"]}' if r.get('detail') else ''
@@ -155,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument('--dir', help='site directory built with --with-tests')
     s.add_argument('--browser', help='Chromium-family executable')
     s.add_argument('--timeout', type=float, default=180.0, help='wall-clock limit in seconds')
+    s.add_argument('--no-sandbox', action='store_true',
+                   help="run Chromium without its sandbox, for CI machines that cannot provide one "
+                        "(e.g. GitHub's ubuntu-24.04 runners)")
 
     sub.add_parser('export', help='asset exporter; `tpht-lab export --help` for its subcommands')
 

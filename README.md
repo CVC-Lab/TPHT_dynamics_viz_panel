@@ -67,6 +67,8 @@ To run the tests in your own browser instead, open `/tests/` on the served site.
 tpht-lab test --browser "/path/to/chrome"     # or set TPHT_BROWSER
 ```
 
+If the browser stops with "No usable sandbox", add `--no-sandbox`. That happens on Ubuntu 23.10 and later when AppArmor restricts unprivileged user namespaces, as on GitHub's ubuntu-24.04 runners, and the Pages workflow passes it for that reason.
+
 ### Working on the code
 
 `src/` is served as it is. After an edit, rebuild the site, which is just a copy (about a second), and reload the page:

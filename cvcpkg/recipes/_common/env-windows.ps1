@@ -1,0 +1,800 @@
+# recipes/_common/env-windows.ps1 — shared environment for Windows recipe builds.
+#
+# Dot-sourced by every build.ps1 on Windows.
+$ErrorActionPreference = 'Stop'
+
+if (-not $env:CVC_BUILD_TYPE)  { $env:CVC_BUILD_TYPE  = 'Release' }
+if (-not $env:CVC_LINK)        { $env:CVC_LINK        = 'shared' }
+if (-not $env:CVC_JOBS)        { $env:CVC_JOBS        = [Environment]::ProcessorCount }
+if (-not $env:CVC_INSTALL_DIR) { throw 'CVC_INSTALL_DIR must be set' }
+if (-not $env:CVC_SOURCE_DIR)  { throw 'CVC_SOURCE_DIR must be set' }
+if (-not $env:CVC_BUILD_DIR)   { throw 'CVC_BUILD_DIR must be set' }
+
+$cmakeBuildType = switch ($env:CVC_BUILD_TYPE.ToLower()) {
+    'release' { 'Release' }
+    'debug'   { 'Debug' }
+    default   { 'Release' }
+}
+
+$buildSharedLibs = if ($env:CVC_LINK -eq 'static') { 'OFF' } else { 'ON' }
+
+# MSVC runtime library: static link -> /MT (static CRT), shared -> /MD (dynamic CRT)
+# The Debug infix goes BEFORE DLL: MultiThreaded[Debug][DLL]
+$msvcRuntime = if ($env:CVC_LINK -eq 'static') {
+    'MultiThreaded$<$<CONFIG:Debug>:Debug>'
+} else {
+    'MultiThreaded$<$<CONFIG:Debug>:Debug>DLL'
+}
+
+# CMAKE_PREFIX_PATH spans both dependency roots:
+#   CVC_DEPS_PREFIX  — the runtime closure (install prefix; these ship)
+#   CVC_BUILD_PREFIX — the build closure (build prefix; stripped on install)
+# Both are searchable at build time; only the former is part of the deliverable.
+# For legacy single-prefix layouts CVC_BUILD_PREFIX is unset or equal, so this
+# collapses to the old behaviour.
+$cvcRoots = @($env:CVC_DEPS_PREFIX, $env:CVC_BUILD_PREFIX) |
+    Where-Object { $_ } | Select-Object -Unique
+if ($cvcRoots) {
+    $env:CMAKE_PREFIX_PATH = ($cvcRoots -join ';')
+}
+
+# cvcpkg's Windows bison is winflexbison, which looks for its m4 skeletons in
+# <exe dir>\data, but the bison recipe stages them in share\bison.  Without
+# this, any build that ran bison failed: "bison.EXE: <prefix>\bin\data/m4sugar/
+# m4sugar.m4: cannot open" (libpq's backend parsers, 2026-10-20).
+if (-not $env:BISON_PKGDATADIR) {
+    foreach ($root in $cvcRoots) {
+        $bisonData = Join-Path $root 'share\bison'
+        if (Test-Path -LiteralPath (Join-Path $bisonData 'm4sugar\m4sugar.m4')) {
+            $env:BISON_PKGDATADIR = $bisonData
+            break
+        }
+    }
+}
+
+# On Windows we ALWAYS build with MSVC (cl.exe).  A prior builder image
+# happened to have Strawberry Perl's g++ ahead of cl on PATH, and the
+# Ninja generator silently picked it, producing GNU-ar '.a' archives
+# with Itanium-mangled symbols that MSVC-mangled downstream consumers
+# (protobuf, grpc, etc.) cannot resolve — 100+ "unresolved external"
+# link errors.  Force cl.exe here so the mangling and archive format
+# stay consistent across the whole dep set.
+$env:CC  = 'cl'
+$env:CXX = 'cl'
+
+# ── Auto-import MSVC developer environment ──────────────────────────
+#
+# When the builder daemon is launched as a service (or from a plain
+# PowerShell prompt) cl.exe / link.exe / rc.exe are NOT on PATH.
+# GitHub Actions runs ilammy/msvc-dev-cmd before invoking us; the
+# self-hosted builder does not, so do it ourselves here if needed.
+#
+# Where the compiler comes from, first match wins:
+#   1. CVC_MSVC_ROOT -- cvcpkg's own MSVC (recipes/msvc), named explicitly:
+#      `cvcpkg install msvc --prefix <dir>` lays it out in <dir>\msvc.
+#   2. a cl.exe already on PATH (a Developer prompt, ilammy/msvc-dev-cmd).
+#   3. cvcpkg's MSVC installed in the build or deps prefix.
+#   4. the newest Visual Studio with the C++ workload, via vswhere.
+function Import-CvcMsvcEnv {
+    if ($env:CVC_MSVC_ROOT) {
+        $setup = Join-Path $env:CVC_MSVC_ROOT 'setup_x64.ps1'
+        if (-not (Test-Path -LiteralPath $setup)) {
+            throw "CVC_MSVC_ROOT=$env:CVC_MSVC_ROOT has no setup_x64.ps1 -- point it at the msvc directory that 'cvcpkg install msvc' created."
+        }
+        & $setup
+        return
+    }
+    if (Get-Command cl.exe -ErrorAction SilentlyContinue) { return }
+
+    $cvcMsvc = @($env:CVC_BUILD_PREFIX, $env:CVC_DEPS_PREFIX) |
+        Where-Object { $_ } |
+        ForEach-Object { Join-Path $_ 'msvc' } |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_ 'setup_x64.ps1') } |
+        Select-Object -First 1
+    if ($cvcMsvc) {
+        & (Join-Path $cvcMsvc 'setup_x64.ps1')
+        if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            throw "Import-CvcMsvcEnv ran $cvcMsvc\setup_x64.ps1 but cl.exe is still not on PATH."
+        }
+        return
+    }
+
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) {
+        $vswhere = "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
+    }
+    if (-not (Test-Path $vswhere)) {
+        throw ("cl.exe not on PATH and vswhere.exe not found. Install cvcpkg's MSVC " +
+               "('cvcpkg install msvc --prefix <dir>', then set CVC_MSVC_ROOT=<dir>\msvc), " +
+               "install Visual Studio Build Tools, or run from a Developer PowerShell.")
+    }
+
+    $vsRoot = & $vswhere -latest -products '*' `
+        -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' `
+        -property installationPath 2>$null | Select-Object -First 1
+    if (-not $vsRoot) {
+        throw "vswhere.exe found no Visual Studio install with the C++ workload."
+    }
+
+    $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path $vcvars)) {
+        throw "vcvars64.bat not found under $vsRoot"
+    }
+
+    # Run vcvars64.bat via a small temp .cmd (properly quoted inside the
+    # batch) and dump the resulting environment.  Invoking a single clean
+    # helper path avoids the fragile inline `cmd /c "..."` quote passing,
+    # whose handling of embedded quotes differs across PowerShell editions
+    # (Windows PowerShell 5.1 vs pwsh 7) and can silently mangle the quoted
+    # vcvars path (which lives under "C:\Program Files (x86)\...").
+    $helper = Join-Path ([System.IO.Path]::GetTempPath()) ("cvc-vcvars-{0}.cmd" -f ([guid]::NewGuid().ToString('N')))
+    $body = "@echo off`r`ncall `"$vcvars`" >nul 2>&1`r`nset`r`n"
+    Set-Content -LiteralPath $helper -Value $body -Encoding Ascii
+    try {
+        $dump = & cmd.exe /c $helper
+    } finally {
+        Remove-Item -LiteralPath $helper -ErrorAction SilentlyContinue
+    }
+    foreach ($line in $dump) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            $name = $matches[1]
+            $val  = $matches[2]
+            # Skip a few obviously-per-process env vars we don't want
+            # to clobber.
+            if ($name -in @('_', 'PROMPT')) { continue }
+            [Environment]::SetEnvironmentVariable($name, $val, 'Process')
+        }
+    }
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+        throw "Import-CvcMsvcEnv ran but cl.exe still not on PATH — vcvars64.bat likely failed silently."
+    }
+}
+Import-CvcMsvcEnv
+
+# ── MSVC's link.exe ahead of any other ──────────────────────────────
+#
+# Git for Windows' bin\bash.exe puts its usr\bin at the front of PATH, and
+# that directory holds coreutils' link.exe (it makes hard links).  A build
+# started from Git Bash -- every `shell: bash` step on GitHub Actions --
+# inherits that order, and Import-CvcMsvcEnv keeps it when cl.exe is already
+# on PATH (ilammy/msvc-dev-cmd).  meson then stopped in project() with
+#   Found GNU link.exe instead of MSVC link.exe in C:\Program Files\Git\usr\bin\link.EXE
+# and anything else that runs a bare `link` would get the wrong one too.
+# MSVC's link.exe sits next to cl.exe, so move cl.exe's directory just ahead
+# of the first directory holding some other link.exe.  Everything else keeps
+# its place, including the cvcpkg prefixes in front.
+function Move-CvcMsvcLinkerFirst {
+    $cl = Get-Command cl.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $cl) { return }
+    $msvcBin = Split-Path -Parent $cl.Source
+    $msvcKey = $msvcBin.TrimEnd('\')
+    # File.Exists never throws, whatever a PATH entry holds (Join-Path and
+    # Test-Path can, on characters that are illegal in a path).
+    if (-not [System.IO.File]::Exists("$msvcKey\link.exe")) { return }
+
+    $dirs = [System.Collections.Generic.List[string]]::new()
+    $placed = $false
+    foreach ($d in ($env:PATH -split ';')) {
+        if (-not $d) { continue }
+        $key = $d.TrimEnd('\')
+        if ($key -ieq $msvcKey) {
+            if (-not $placed) { $dirs.Add($d); $placed = $true }
+            continue
+        }
+        if (-not $placed -and [System.IO.File]::Exists("$key\link.exe")) {
+            Write-Host "-- env-windows.ps1: $msvcBin moved ahead of $d (its link.exe is not MSVC's)"
+            $dirs.Add($msvcBin)
+            $placed = $true
+        }
+        $dirs.Add($d)
+    }
+    $env:PATH = $dirs -join ';'
+}
+Move-CvcMsvcLinkerFirst
+
+function Invoke-CvcCMakeBuild {
+    param([string[]]$ExtraArgs = @())
+
+    # Strip MinGW/MSYS2 dirs from PATH for the duration of the MSVC
+    # cmake build.  CMake's find_path()/find_library() default search
+    # includes "for each dir in PATH, look in ../include and ../lib" —
+    # which means if C:\msys64\mingw64\bin is on Machine PATH the
+    # MinGW-w64 headers (stdio.h with __asm__, __builtin_va_list, etc.)
+    # get picked up by cl.exe.  Those headers are gcc-only and produce
+    # thousands of parse errors under MSVC.  MSVC builds have zero use
+    # for anything under C:\msys64\, so drop them entirely here.
+    $origPath = $env:PATH
+    $filteredPath = ($env:PATH -split ';' |
+        Where-Object { $_ -notmatch '(?i)\\msys64\\' -and $_ -notmatch '(?i)\\msys32\\' }) -join ';'
+    $env:PATH = $filteredPath
+
+    try {
+        $allArgs = @(
+            '-G', 'Ninja',
+            '-S', $env:CVC_SOURCE_DIR,
+            '-B', $env:CVC_BUILD_DIR,
+            "-DCMAKE_INSTALL_PREFIX=$env:CVC_INSTALL_DIR",
+            "-DCMAKE_BUILD_TYPE=$cmakeBuildType",
+            "-DBUILD_SHARED_LIBS=$buildSharedLibs",
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=$msvcRuntime",
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+            '-DCMAKE_C_COMPILER=cl',
+            '-DCMAKE_CXX_COMPILER=cl'
+        ) + $ExtraArgs
+
+        & cmake @allArgs
+        if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+        & cmake --build $env:CVC_BUILD_DIR -j $env:CVC_JOBS
+        if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+
+        & cmake --install $env:CVC_BUILD_DIR
+        if ($LASTEXITCODE -ne 0) { throw "cmake install failed" }
+    } finally {
+        $env:PATH = $origPath
+    }
+
+    Invoke-CvcRewriteInstallPaths
+}
+
+# ── Relocatability helper ───────────────────────────────────────────
+#
+# Rewrite absolute $env:CVC_INSTALL_DIR (and $env:CVC_DEPS_PREFIX) paths
+# inside installed .pc and .cmake files so downstream consumers keep working
+# when the package is unpacked at a different prefix.  .pc files anchor at ${pcfiledir}
+# and .cmake files at ${CMAKE_CURRENT_LIST_DIR}; the ../ suffix is
+# computed per-file from its depth under $env:CVC_INSTALL_DIR.  CMake
+# on Windows writes paths with forward slashes into generated files,
+# but MSVC/PowerShell APIs return backslash form, so we search for
+# both variants.  Idempotent.
+#
+# A THIRD form is the MSYS one (/c/Users/...).  Recipes that drive an
+# autotools configure through Git Bash may hand it --prefix in MSYS form,
+# and configure bakes --prefix verbatim into every .pc file it installs.
+# Searching only the two Windows forms made this function match nothing and
+# silently no-op on exactly those recipes, shipping .pc files still pointing
+# at the (by then deleted) per-build temp prefix.  The ffmpeg-cli recipe hit
+# this against the dbg-deps prefix, where the .pc files sat broken and
+# unnoticed:
+#     prefix=/c/Users/.../Temp/cvcpkg-ffmpeg-cli-mo8z5hhz/install
+# Recipes should still pass the drive-letter form (see recipes/x264: a
+# native ranlib run by `make install` cannot resolve /c/... at all), but a
+# relocatability helper must not depend on every caller getting that right.
+
+function Invoke-CvcRewriteInstallPaths {
+    $root = $env:CVC_INSTALL_DIR
+    if (-not $root) { return }
+    $root = $root.TrimEnd('\','/')
+    if (-not (Test-Path -LiteralPath $root)) { return }
+
+    $rootBack = $root
+    $rootFwd  = $root -replace '\\','/'
+    # Defined further down this file; by the time a build.ps1 calls us the
+    # whole file has been dot-sourced, so the ordering is fine.
+    $rootMsys = ConvertTo-CvcMsysPath $root
+    $rootForms = @($rootBack, $rootFwd, $rootMsys) | Sort-Object -Unique
+    # The DEPS prefix too, as rewrite-install-paths.sh does on Unix. A CMake
+    # export can bake an absolute path to a dependency that lived under
+    # $env:CVC_DEPS_PREFIX at build time: classic FindZLIB hands back
+    # ${ZLIB_LIBRARIES} (an absolute .../lib/z.lib), not ZLIB::ZLIB, and it lands
+    # in INTERFACE_LINK_LIBRARIES. assimp 6.0.5+cvc.6's Windows bundle shipped
+    # 'C:/Users/tfx/cvcpkg-builder/cvcpkg-job-assimp-*/cvcpkg-prefix-assimp-*/lib/z.lib',
+    # so every consumer's link failed. In cvcpkg's flat install every dependency
+    # sits at the consumer's prefix, so a deps-prefix path takes the same
+    # per-file anchor as an install-dir path. Install-dir forms are rewritten
+    # first: they are the more specific match where the two prefixes overlap.
+    $depsForms = @()
+    if ($env:CVC_DEPS_PREFIX) {
+        $deps = $env:CVC_DEPS_PREFIX.TrimEnd('\','/')
+        if ($deps) {
+            $depsForms = @($deps, ($deps -replace '\\','/'), (ConvertTo-CvcMsysPath $deps)) |
+                Sort-Object -Unique
+        }
+    }
+    $forms = @($rootForms) + @($depsForms)
+
+    $files = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq '.pc' -or $_.Extension -eq '.cmake' }
+    $count = 0
+    foreach ($f in $files) {
+        $text = Get-Content -Raw -LiteralPath $f.FullName -ErrorAction SilentlyContinue
+        if (-not $text) { continue }
+        # Case-INSENSITIVE, to match the -replace below (PowerShell's -replace
+        # is case-insensitive by default). String.Contains is ordinal, so a
+        # case-sensitive gate here would be stricter than the rewrite it
+        # guards and would skip files the rewrite could have fixed — Windows
+        # paths differ in case freely, and the MSYS form lower-cases the drive
+        # letter by construction.
+        $needsRewrite = $false
+        foreach ($form in $forms) {
+            if ($text.IndexOf($form, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $needsRewrite = $true; break
+            }
+        }
+        if (-not $needsRewrite) { continue }
+
+        $dirNorm = ($f.DirectoryName -replace '\\','/')
+        $rootFwdTrim = $rootFwd
+        $remainder = $dirNorm.Substring($rootFwdTrim.Length).TrimStart('/')
+        $depth = if ($remainder) { ($remainder -split '/').Length } else { 0 }
+        $rel = if ($depth -gt 0) { (('../' * $depth)).TrimEnd('/') } else { '.' }
+        $anchor = if ($f.Extension -eq '.pc') { '${pcfiledir}' } else { '${CMAKE_CURRENT_LIST_DIR}' }
+        $prefix = "$anchor/$rel"
+
+        foreach ($form in $forms) {
+            $text = $text -replace [regex]::Escape($form), $prefix.Replace('$','$$')
+        }
+        Set-Content -LiteralPath $f.FullName -Value $text -NoNewline
+        $count++
+    }
+    if ($count -gt 0) {
+        Write-Host "── Invoke-CvcRewriteInstallPaths: normalized $count file(s) under $root ──"
+    }
+}
+
+# Fail when an installed file still names this build's install or deps prefix.
+# Invoke-CvcRewriteInstallPaths relocates .pc and .cmake files only; scripts
+# bake --prefix in forms it never touches -- glib's bin/gdbus-codegen
+# ('C:/Users/.../install/share') and openssl's bin/c_rehash.pl (a Perl string,
+# "C:\\Users\\...\\install") -- and both directories are gone once the job
+# ends.  Recipes call this last, after fixing what they install.  Every
+# spelling is checked, case-insensitively: backslash, forward slash, MSYS, and
+# the doubled backslashes of a quoted C or Perl string.  Binaries (any NUL
+# byte) are skipped.  -ExtraPrefixes adds directories of the recipe's own that
+# must not leak either (CVC_BUILD_DIR, a DESTDIR staging dir).
+function Assert-CvcNoBuildPrefixPaths {
+    param([string]$Recipe = 'recipe', [string[]]$ExtraPrefixes = @())
+    $root = $env:CVC_INSTALL_DIR
+    if (-not $root -or -not (Test-Path -LiteralPath $root)) { return }
+    $forms = foreach ($p in @($env:CVC_INSTALL_DIR, $env:CVC_DEPS_PREFIX) + $ExtraPrefixes) {
+        if (-not $p) { continue }
+        $p = $p.TrimEnd('\', '/')
+        if (-not $p) { continue }
+        $p; ($p -replace '\\', '/'); ($p -replace '\\', '\\'); (ConvertTo-CvcMsysPath $p)
+    }
+    $forms = @($forms | Sort-Object -Unique)
+    $leftover = @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {
+        $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { return $false }
+        $t = [System.Text.Encoding]::UTF8.GetString($bytes)
+        foreach ($form in $forms) {
+            if ($t.IndexOf($form, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+        }
+        $false
+    })
+    if ($leftover) {
+        $leftover | ForEach-Object { Write-Host "  $($_.FullName)" }
+        throw "${Recipe}: installed files still name the build's install or deps prefix (listed above)"
+    }
+}
+
+# ── MSYS2 / MinGW autotools helper ──────────────────────────────────
+#
+# A handful of dependencies (gmp, mpfr, gsl) have no working native
+# MSVC build (upstream autotools is Unix-only, no CMake, GNU-only
+# assembly).  For those we build via MinGW-w64 gcc + GNU make driven
+# through Git Bash — this produces cdecl-C DLLs that MSVC downstream
+# consumers can link against through the mingw-generated import
+# library.  When CVC_LINK=static we use the mingw static archive
+# directly; it links cleanly from MSVC for pure-C libraries with no
+# libgcc/libstdc++ dependencies (which is the case for gmp/mpfr/gsl).
+#
+# The shell comes from the `msys2` cvcpkg recipe (the MSYS bootstrap: a
+# sha256-pinned MSYS2 base plus the MSYS gcc/perl/diffutils it needs), which
+# the autotools recipes declare under depends.build scoped to windows, so it is
+# staged into the BUILD prefix. Everything else -- make, m4, autoconf, automake,
+# libtool, and the MinGW-w64 gcc -- comes from its own cvcpkg recipe. A bare
+# ambient C:\msys64 (all a GitHub-hosted image has: the `base` group, no
+# compiler, no make) is only a last-resort fallback.
+
+# Initialize-CvcMsysShell BASH -- start BASH once, discarding its output, and
+# return the path.  A freshly unpacked MSYS2 (the msys2 build dep, new in every
+# job's prefix) runs its first-launch setup when the user's home directory does
+# not exist yet, which is always the case under a builder service with no HOME
+# set: it creates /home/<user> and prints "Copying skeleton files ..." to
+# STDOUT.  That landed in the first captured `bash -lc` probe below, so the
+# probe's output was not "OK" and the first tool checked was reported missing:
+# automake on the prod Windows builder failed with "MSYS build tools not found
+# on PATH ...: make" with make installed.  (Interactive shells and ssh sessions
+# set HOME, so the setup never ran there and the failure did not reproduce.)
+$script:CvcMsysShellsReady = @{}
+function Initialize-CvcMsysShell {
+    param([string]$Bash)
+    if (-not $script:CvcMsysShellsReady.ContainsKey($Bash)) {
+        $null = & $Bash -lc 'true' 2>&1
+        $script:CvcMsysShellsReady[$Bash] = $true
+    }
+    return $Bash
+}
+
+function Get-CvcGitBash {
+    # Return a bash.exe that has (or can find) mingw-w64 gcc + make +
+    # autotools on its PATH.  Priority order:
+    #   1. CVC_MSYS2_DIR env var (manual override)
+    #   2. CVC_BUILD_PREFIX\msys2 (the msys2 recipe staged as a BUILD dep --
+    #      where `cvcpkg build --with-deps` and the fleet put it)
+    #   3. CVC_DEPS_PREFIX\msys2 (the msys2 recipe installed into the prefix)
+    #   4. Well-known MSYS2 system paths (C:\msys64, C:\tools\msys64)
+    #   5. Git Bash fallback (no MinGW — usable only for non-compile scripts)
+    #
+    # The build prefix MUST come before C:\msys64: a GitHub-hosted image ships a
+    # bare C:\msys64 (pacman + the `base` group only -- no gcc, no make), and
+    # picking it over the staged bootstrap is exactly how m4's configure ended
+    # up with no working C compiler on a clean runner.
+    $candidates = [System.Collections.Generic.List[string]]@()
+    if ($env:CVC_MSYS2_DIR) {
+        $candidates.Add((Join-Path $env:CVC_MSYS2_DIR 'usr\bin\bash.exe'))
+    }
+    foreach ($root in @($env:CVC_BUILD_PREFIX, $env:CVC_DEPS_PREFIX) | Where-Object { $_ } | Select-Object -Unique) {
+        $candidates.Add((Join-Path $root 'msys2\usr\bin\bash.exe'))
+    }
+    $candidates.AddRange([string[]]@(
+        'C:\msys64\usr\bin\bash.exe',
+        'C:\tools\msys64\usr\bin\bash.exe',
+        "$env:ProgramFiles\Git\usr\bin\bash.exe",
+        "$env:ProgramFiles\Git\bin\bash.exe",
+        "${env:ProgramFiles(x86)}\Git\usr\bin\bash.exe"
+    ))
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) { return (Initialize-CvcMsysShell $candidate) }
+    }
+    $found = Get-Command bash -ErrorAction SilentlyContinue |
+             Where-Object { $_.Source -notmatch 'System32' } |
+             Select-Object -First 1
+    if ($found) { return (Initialize-CvcMsysShell $found.Source) }
+    throw 'bash.exe not found (looked under CVC_MSYS2_DIR, CVC_BUILD_PREFIX\msys2\usr\bin\, CVC_DEPS_PREFIX\msys2\usr\bin\, C:\msys64\usr\bin\, Git\usr\bin\, and PATH)'
+}
+
+function ConvertTo-CvcMsysPath {
+    # Convert C:\foo\bar → /c/foo/bar for autotools scripts.
+    param([string]$Path)
+    if ($Path -match '^([A-Za-z]):(.*)$') {
+        $drive = $Matches[1].ToLower()
+        $rest  = $Matches[2] -replace '\\','/'
+        return "/$drive$rest"
+    }
+    return ($Path -replace '\\','/')
+}
+
+function Invoke-CvcMsysAutotoolsBuild {
+    <#
+    .SYNOPSIS
+      Configure + make + make install via Git Bash + MinGW gcc.
+    .PARAMETER ConfigureArgs
+      Extra arguments to pass to ./configure (beyond --prefix + --host).
+    .PARAMETER HostTriple
+      Cross-compilation host triple.  Defaults to x86_64-w64-mingw32
+      (native MinGW-w64 on Windows).
+    .PARAMETER Jobs
+      Override make -j parallelism.  Defaults to $env:CVC_JOBS.
+      Set to 1 for fork-heavy libtool builds that deadlock MSYS2 under
+      the SYSTEM account (gmp, mpfr, ...).
+    #>
+    param(
+        [string[]]$ConfigureArgs = @(),
+        [string]$HostTriple = 'x86_64-w64-mingw32',
+        [int]$Jobs = 0
+    )
+    if ($Jobs -le 0) { $Jobs = [int]$env:CVC_JOBS }
+    if ($Jobs -le 0) { $Jobs = 1 }
+
+    $bash        = Get-CvcGitBash
+    $msysSource  = ConvertTo-CvcMsysPath $env:CVC_SOURCE_DIR
+    # Install prefix in drive-letter form with forward slashes (C:/...), NOT the
+    # MSYS /c/... form. The toolchain is NATIVE MinGW (mingw-w64-gcc), which
+    # cannot open /c/... at all; `make install` runs the native ranlib on the
+    # installed static archive, and recipes/x264 hit exactly that:
+    #   ranlib /c/.../install/lib/libx264.a  ->  "No such file"
+    # A native-readable prefix needs no translation on any path. MSYS install/
+    # mkdir accept either form, and Invoke-CvcRewriteInstallPaths relocates C:/
+    # in .pc files.
+    $winPrefix   = ($env:CVC_INSTALL_DIR -replace '\\', '/')
+    # Put the staged build tools first on PATH. host_tools (m4/autoconf/automake/
+    # libtool/the compiler) are staged into the BUILD prefix; link deps and make
+    # land in the DEPS prefix — search BOTH, since the old form looked only in
+    # CVC_DEPS_PREFIX and missed host_tools entirely.
+    #
+    # EXPORT it: `PATH=x cd dir && ./configure` scopes the assignment to the `cd`
+    # builtin alone, so configure/make ran with the ORIGINAL PATH and never saw
+    # the staged tools — silently falling through to ambient C:\msys64. The same
+    # trap recipes/x264 and recipes/ffmpeg-cli document. A trailing `;` lets it
+    # compose in front of any command below.
+    $toolRoots    = @($env:CVC_BUILD_PREFIX, $env:CVC_DEPS_PREFIX) | Where-Object { $_ }
+    $msysToolBins = ($toolRoots | ForEach-Object { (ConvertTo-CvcMsysPath $_) + '/bin' }) -join ':'
+    $depsFlag     = if ($msysToolBins) { "export PATH='${msysToolBins}:'`$PATH; " } else { '' }
+
+    # The MinGW-w64 64-bit subsystem: configure then sees build=*-mingw*, which
+    # is how libtool knows it is really running under MSYS and must translate
+    # MSYS paths for the native toolchain. The compiler itself is the pinned
+    # mingw-w64-gcc in the build prefix ($depsFlag), not /mingw64/bin.
+    #
+    # Leave MSYS2's argument path conversion ON (no MSYS_NO_PATHCONV), as every
+    # MSYS2 MinGW package build does: libtool's msys->w32 translation is
+    # `cmd //c echo <path>`, which relies on MSYS turning `//c` into `/c`, and it
+    # runs for every static archive it creates (tool_oldlib) and installs. The
+    # drive-letter --prefix above is untouched by the conversion either way.
+    $env:MSYSTEM         = 'MINGW64'
+    Remove-Item Env:MSYS_NO_PATHCONV -ErrorAction SilentlyContinue
+    $env:CHERE_INVOKING  = '1'
+    # MSYS2's minimal PATH, never the inherited Windows one: a runner's PATH
+    # carries Strawberry Perl's c\bin (its own x86_64-w64-mingw32-gcc and make)
+    # and MSVC, either of which configure would happily pick up.
+    $env:MSYS2_PATH_TYPE = 'minimal'
+
+    # Clear MSVC compiler env inherited from the outer PowerShell
+    # session — env-windows.ps1 sets CC=cl / CXX=cl for Invoke-CvcCMakeBuild,
+    # but for the autotools path we need bash's PATH to select the
+    # MinGW-w64 gcc from /mingw64/bin.  Autoconf's ./configure would
+    # otherwise take CC=cl at face value, produce nonsense build-system
+    # detection, and choke on the first Unix-only linker flag (e.g.
+    # -lm  →  LINK: cannot open input file 'm.lib').
+    Remove-Item Env:CC  -ErrorAction SilentlyContinue
+    Remove-Item Env:CXX -ErrorAction SilentlyContinue
+    Remove-Item Env:LD  -ErrorAction SilentlyContinue
+    Remove-Item Env:AR  -ErrorAction SilentlyContinue
+    Remove-Item Env:NM  -ErrorAction SilentlyContinue
+    Remove-Item Env:RANLIB -ErrorAction SilentlyContinue
+    Remove-Item Env:CFLAGS  -ErrorAction SilentlyContinue
+    Remove-Item Env:CXXFLAGS -ErrorAction SilentlyContinue
+    Remove-Item Env:LDFLAGS -ErrorAction SilentlyContinue
+
+    $sharedFlags = if ($env:CVC_LINK -eq 'static') {
+        '--enable-static --disable-shared'
+    } else {
+        '--enable-shared --enable-static'
+    }
+
+    # Pre-flight: verify the MSYS2/MinGW build tools are actually reachable.
+    # These come from their own cvcpkg recipes declared under depends.build
+    # (scoped to windows) — cvcpkg stages host_tools only when cross-compiling, so
+    # a native Windows build must carry the GNU toolchain as real build deps that
+    # stage into the build prefix, which $depsFlag now puts on PATH.
+    #
+    # Probe each tool BY NAME and test a SCALAR boolean. The old guard,
+    # `if ($probe -notmatch 'OK')`, was silently dead: when the probe finds
+    # nothing $probe is AutomationNull, and `$null -notmatch 'OK'` returns an
+    # empty Object[], which `if` treats as false — so a missing toolchain sailed
+    # straight through and configure failed obscurely much later.
+    $required = @('m4', 'libtool', 'autoconf', 'automake', 'make')
+    $missing  = @($required | Where-Object {
+        # Last line only: anything a login shell prints first (see
+        # Initialize-CvcMsysShell) must not hide the OK.
+        $found = & $bash -lc "$depsFlag command -v $_ >/dev/null 2>&1 && echo OK" | Select-Object -Last 1
+        "$found".Trim() -ne 'OK'
+    })
+    if ($missing.Count -gt 0) {
+        throw ("MSYS2 autotools not found on PATH: $($missing -join ', '). " +
+               'Declare m4/autoconf/automake/libtool/make (and mingw-w64-gcc) ' +
+               'under depends.build (scoped to windows) in recipe.yaml.')
+    }
+
+    # Build one big command line for bash; the caller-provided extras
+    # win over defaults because they come last.
+    $extras   = ($ConfigureArgs -join ' ')
+    $cmd = "$depsFlag cd '$msysSource' && ./configure --prefix='$winPrefix' --host='$HostTriple' $sharedFlags $extras"
+    Write-Host "cvcpkg: bash -lc `"$cmd`""
+    & $bash -lc $cmd
+    if ($LASTEXITCODE -ne 0) {
+        $cfgLog = Join-Path $env:CVC_SOURCE_DIR 'config.log'
+        if (Test-Path $cfgLog) {
+            Write-Host '--- config.log (last 80 lines) ---'
+            Get-Content $cfgLog -Tail 80
+        }
+        throw "configure failed"
+    }
+
+    # make (and the compiler it drives) also need the staged tools on PATH, so
+    # carry $depsFlag here too — not just on the configure line.
+    & $bash -lc "$depsFlag cd '$msysSource' && make -j $Jobs"
+    if ($LASTEXITCODE -ne 0) { throw "make failed" }
+
+    & $bash -lc "$depsFlag cd '$msysSource' && make install"
+    if ($LASTEXITCODE -ne 0) { throw "make install failed" }
+
+    # Post-process installed libraries so MSVC downstream can link:
+    #   libfoo.dll.a  → foo.lib      (import library for shared)
+    #   libfoo.a      → foo.lib      (static archive; only used when
+    #                                 CVC_LINK=static — safe for
+    #                                 pure-C libs without libgcc deps)
+    # Copies rather than renames so both mingw-style names and
+    # MSVC-style names are present, and downstream find_library() can
+    # locate whichever it looks for.
+    $installLib = Join-Path $env:CVC_INSTALL_DIR 'lib'
+    if (Test-Path $installLib) {
+        foreach ($f in Get-ChildItem -Path $installLib -File -Filter 'lib*.dll.a' -ErrorAction SilentlyContinue) {
+            $stem = $f.Name.Substring(3, $f.Name.Length - 3 - 6)   # strip "lib" prefix + ".dll.a" suffix
+            $dest = Join-Path $installLib ($stem + '.lib')
+            if (-not (Test-Path $dest)) { Copy-Item -Force $f.FullName $dest }
+        }
+        if ($env:CVC_LINK -eq 'static') {
+            foreach ($f in Get-ChildItem -Path $installLib -File -Filter 'lib*.a' -ErrorAction SilentlyContinue) {
+                if ($f.Name -like '*.dll.a') { continue }
+                $stem = $f.Name.Substring(3, $f.Name.Length - 3 - 2)  # strip "lib" prefix + ".a" suffix
+                $dest = Join-Path $installLib ($stem + '.lib')
+                if (-not (Test-Path $dest)) { Copy-Item -Force $f.FullName $dest }
+            }
+        }
+    }
+}
+
+# ── MSYS-subsystem host-tool helper ─────────────────────────────────
+#
+# GNU make, m4, autoconf, automake and libtool are BUILD tools that run inside
+# the MSYS2 shell, so on Windows they are built for the MSYS subsystem itself
+# (linked against msys-2.0.dll, POSIX paths throughout) -- the way MSYS2 builds
+# its own copies -- by running the recipe's own POSIX build.sh under the
+# bootstrap's bash. One script for every platform also means the Windows bundle
+# gets the same post-install relocation the unix bundles do (autoconf and
+# automake bake their ephemeral build prefix; see recipes/autoconf/build.sh).
+#
+# The C compiler is the MSYS gcc from the `msys2` bootstrap recipe; make, m4,
+# autoconf, ... come from their own cvcpkg recipes staged in the build/deps
+# prefixes. A recipe using this declares `msys2` (plus whichever of make/m4/
+# autoconf its build runs) under depends.build, scoped to windows.
+#
+# Usage (recipes/<tool>/build.ps1):
+#   . "$scriptDir\..\_common\env-windows.ps1"
+#   Invoke-CvcMsysHostToolBuild -Require gcc, make
+function Invoke-CvcMsysHostToolBuild {
+    <#
+    .SYNOPSIS
+      Run a POSIX build script under the MSYS2 bootstrap's MSYS subsystem.
+    .PARAMETER Script
+      The script to run. Defaults to the recipe's own build.sh.
+    .PARAMETER Require
+      Tools that must resolve on the build PATH before the script runs; a
+      missing one fails here, by name, instead of deep inside configure.
+    #>
+    param(
+        [string]$Script = '',
+        [string[]]$Require = @('gcc')
+    )
+    if (-not $Script) { $Script = Join-Path $env:CVC_RECIPE_DIR 'build.sh' }
+    if (-not (Test-Path -LiteralPath $Script)) { throw "build script not found: $Script" }
+
+    $bash = Get-CvcGitBash
+    Write-Host "cvcpkg: MSYS bash: $bash"
+
+    # The MSYS subsystem, with MSYS2's minimal (non-inherited) PATH: the
+    # bootstrap's /usr/bin plus System32. Inheriting the Windows PATH would let
+    # MSVC's cl, Strawberry Perl's gcc/make, or Git's own MSYS runtime (a SECOND
+    # msys-2.0.dll) leak into configure.
+    $env:MSYSTEM         = 'MSYS'
+    $env:MSYS2_PATH_TYPE = 'minimal'
+    $env:CHERE_INVOKING  = '1'
+    Remove-Item Env:MSYS_NO_PATHCONV -ErrorAction SilentlyContinue
+
+    # env-windows.ps1 pins CC=cl/CXX=cl for the MSVC helpers above. Autoconf takes
+    # $CC at face value ("checking for gcc... cl"), and with no cl on the MSYS
+    # PATH every compile then fails: "C compiler cannot create executables" --
+    # m4's failure on a clean runner. Drop the whole MSVC-flavoured toolchain env.
+    foreach ($v in 'CC', 'CXX', 'CPP', 'LD', 'AR', 'NM', 'RANLIB', 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS') {
+        Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+    }
+
+    # The build scripts hand these paths to configure/make, so give them MSYS form.
+    $exports = [ordered]@{}
+    foreach ($v in 'CVC_INSTALL_DIR', 'CVC_SOURCE_DIR', 'CVC_BUILD_DIR', 'CVC_PREFIX',
+                   'CVC_DEPS_PREFIX', 'CVC_BUILD_PREFIX', 'CVC_RECIPE_DIR') {
+        $val = [Environment]::GetEnvironmentVariable($v)
+        if ($val) { $exports[$v] = ConvertTo-CvcMsysPath $val }
+    }
+    $exports['CVC_JOBS'] = "$env:CVC_JOBS"
+    # MSYS2's gcc is GCC 15, which defaults to C23: `extern char *getenv ();` now
+    # means (void), so make 4.4.1 and m4 1.4.19's gnulib stop compiling. MSYS2's
+    # own PKGBUILDs pin -std=gnu17 (or patch the sources) for the same reason.
+    $exports['CFLAGS'] = '-O2 -std=gnu17'
+    # gnulib's weak-symbol probe wrongly passes on Cygwin/MSYS (PE has no real
+    # weak undefined symbols); MSYS2 patches m4's threadlib.m4 to force "no".
+    # Pre-seeding the configure cache variable does the same without autoreconf.
+    $exports['gl_cv_have_weak'] = 'no'
+
+    # /usr/bin FIRST: the bootstrap's MSYS gcc/binutils must win over the native
+    # MinGW gcc/binutils that mingw-w64-gcc stages into the same build prefix.
+    # The prefixes follow, for the cvcpkg tools the bootstrap deliberately does
+    # not ship (make, m4, autoconf, automake, libtool).
+    $toolRoots    = @($env:CVC_BUILD_PREFIX, $env:CVC_DEPS_PREFIX) | Where-Object { $_ } | Select-Object -Unique
+    $msysToolBins = ($toolRoots | ForEach-Object { (ConvertTo-CvcMsysPath $_) + '/bin' }) -join ':'
+    $prelude = if ($msysToolBins) { "export PATH='/usr/bin:${msysToolBins}:'`$PATH; " } else { "export PATH=/usr/bin:`$PATH; " }
+    foreach ($k in $exports.Keys) { $prelude += "export $k='$($exports[$k])'; " }
+
+    # Probe each tool BY NAME, testing a scalar (see Invoke-CvcMsysAutotoolsBuild).
+    $missing = @($Require | Where-Object {
+        # Last line only: anything a login shell prints first (see
+        # Initialize-CvcMsysShell) must not hide the OK.
+        $found = & $bash -lc "$prelude command -v $_ >/dev/null 2>&1 && echo OK" | Select-Object -Last 1
+        "$found".Trim() -ne 'OK'
+    })
+    if ($missing.Count -gt 0) {
+        throw ("MSYS build tools not found on PATH (bash: $bash): $($missing -join ', '). " +
+               'Declare msys2 (and make/m4/autoconf as the build needs) under ' +
+               'depends.build, scoped to windows, in recipe.yaml.')
+    }
+
+    $cmd = "$prelude bash '$(ConvertTo-CvcMsysPath $Script)'"
+    Write-Host "cvcpkg: bash -lc `"$cmd`""
+    & $bash -lc $cmd
+    if ($LASTEXITCODE -ne 0) { throw "MSYS build of $env:CVC_COMPONENT failed (exit $LASTEXITCODE)" }
+}
+
+# ── Meson / MSVC helper ─────────────────────────────────────────────
+#
+# Build a Meson project with the native MSVC toolchain (cl.exe).  This
+# produces proper Windows .dll/.lib files (MSVC ABI, not MinGW ABI) so
+# consumers built with cl.exe can link directly.
+#
+# Meson and Ninja must be on PATH.  Declare them as host_tools in the
+# calling recipe.yaml (depends.host_tools: [meson, ninja]).  The PATH
+# check below will throw a clear error if they are missing.
+# MinGW/MSYS2 directories are stripped from PATH for the duration of
+# the build to prevent gcc headers from contaminating the MSVC build.
+#
+# --wrap-mode=nofallback: a dependency meson cannot find fails setup.
+# It is never replaced by a subproject that meson downloads from upstream
+# during the build and installs into the prefix (see recipes/pango/build.sh).
+#
+# Usage:
+#   Invoke-CvcMesonBuild [-MesonArgs <string[]>]
+function Invoke-CvcMesonBuild {
+    param([string[]]$MesonArgs = @())
+
+    # Verify meson and ninja are available; they must come from their
+    # own cvcpkg recipes declared as host_tools — do NOT install here.
+    if (-not (Get-Command meson -ErrorAction SilentlyContinue)) {
+        throw 'meson not found on PATH. Declare "meson" as a host_tool in recipe.yaml.'
+    }
+    if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+        throw 'ninja not found on PATH. Declare "ninja" as a host_tool in recipe.yaml.'
+    }
+
+    # Strip MinGW/MSYS2 from PATH so meson selects cl.exe, not gcc.
+    $origPath = $env:PATH
+    $filteredPath = ($env:PATH -split ';' |
+        Where-Object { $_ -notmatch '(?i)\\msys64\\' -and $_ -notmatch '(?i)\\msys32\\' }) -join ';'
+    $env:PATH = $filteredPath
+
+    # Meson defaults: shared/static, release/debug, MSVC runtime.
+    $defaultLibrary = if ($env:CVC_LINK -eq 'static') { 'static' } else { 'shared' }
+    $buildtype      = $cmakeBuildType.ToLower()
+
+    $pkgConfigPath = if ($env:CVC_DEPS_PREFIX) {
+        Join-Path $env:CVC_DEPS_PREFIX 'lib\pkgconfig'
+    } else { '' }
+
+    try {
+        $setupArgs = @(
+            'setup',
+            "--prefix=$env:CVC_INSTALL_DIR",
+            "--buildtype=$buildtype",
+            '--libdir=lib',
+            "--default-library=$defaultLibrary",
+            '--wrap-mode=nofallback'
+        )
+        if ($pkgConfigPath -and (Test-Path $pkgConfigPath)) {
+            $setupArgs += "--pkg-config-path=$pkgConfigPath"
+        }
+        if ($env:CVC_DEPS_PREFIX) {
+            $setupArgs += "-Dcmake_prefix_path=$env:CVC_DEPS_PREFIX"
+        }
+        $setupArgs += $MesonArgs
+        $setupArgs += $env:CVC_BUILD_DIR
+        $setupArgs += $env:CVC_SOURCE_DIR
+
+        & meson @setupArgs
+        if ($LASTEXITCODE -ne 0) { throw 'meson setup failed' }
+
+        & meson compile -C $env:CVC_BUILD_DIR -j $env:CVC_JOBS
+        if ($LASTEXITCODE -ne 0) { throw 'meson compile failed' }
+
+        & meson install -C $env:CVC_BUILD_DIR
+        if ($LASTEXITCODE -ne 0) { throw 'meson install failed' }
+    } finally {
+        $env:PATH = $origPath
+    }
+
+    Invoke-CvcRewriteInstallPaths
+}
+
+Write-Host "-- env-windows.ps1 loaded --"
+Write-Host "  BUILD_TYPE=$cmakeBuildType  LINK=$env:CVC_LINK  JOBS=$env:CVC_JOBS"

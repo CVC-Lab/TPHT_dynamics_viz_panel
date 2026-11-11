@@ -1,0 +1,622 @@
+#!/usr/bin/env bash
+# recipes/_common/build-python.sh — shared CPython build logic.
+#
+# Sourced by recipes/python3{11,12,13}/build.sh after they export:
+#   PYTHON_VERSION   e.g. "3.12.10"
+#   PYTHON_MINOR     e.g. "3.12"
+#
+# Required cvcpkg env vars (set by builder):
+#   CVC_INSTALL_DIR, CVC_SOURCE_DIR, CVC_BUILD_DIR (unused — CPython uses
+#   in-source build), CVC_DEPS_PREFIX, CVC_JOBS, CVC_LINK, CVC_PLATFORM.
+set -euo pipefail
+
+: "${CVC_INSTALL_DIR:?}"
+: "${CVC_SOURCE_DIR:?}"
+: "${CVC_JOBS:=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+: "${CVC_DEPS_PREFIX:?CVC_DEPS_PREFIX must be set to the cvcpkg deps prefix}"
+: "${PYTHON_VERSION:?PYTHON_VERSION must be exported before sourcing this script}"
+: "${PYTHON_MINOR:?PYTHON_MINOR must be exported before sourcing this script}"
+# PYTHON_LDVERSION — ABI suffix for the binary/lib/include names.
+# Defaults to PYTHON_MINOR; free-threaded builds set this to e.g. "3.13t".
+: "${PYTHON_LDVERSION:=${PYTHON_MINOR}}"
+# PYTHON_DISABLE_GIL — set to "1" to pass --disable-gil (free-threaded build).
+: "${PYTHON_DISABLE_GIL:=0}"
+
+cd "${CVC_SOURCE_DIR}"
+
+# Use gmake on BSDs (CPython's Makefile is GNU make).
+MAKE=make
+if command -v gmake >/dev/null 2>&1; then
+    MAKE=gmake
+fi
+
+# --- Detect cross-compile targets ---
+# wasm / wasi / cosmo: static builds with a cross host triple.
+# Native platforms (linux, macos, freebsd, openbsd, netbsd, windows) use
+# the native toolchain with shared libraries.
+# NOTE: must be declared before the RPATH/flags section below which
+# gates LDFLAGS on IS_CROSS — set -u would error if IS_CROSS were unset.
+IS_CROSS=false
+CROSS_HOST=""
+case "${CVC_PLATFORM}" in
+    wasm|wasm-mt) IS_CROSS=true; CROSS_HOST="wasm32-emscripten" ;;
+    wasi)   IS_CROSS=true; CROSS_HOST="wasm32-wasi" ;;
+    cosmo)  IS_CROSS=true; CROSS_HOST="x86_64-cosmo" ;;
+esac
+
+# Both emscripten flavors — plain `wasm` (single-threaded) and `wasm-mt`
+# (-pthread / SharedArrayBuffer) — share the SAME emscripten toolchain wrappers,
+# cross host triple (wasm32-emscripten), native build-python helper, config.site
+# and TLS-less module set. Only the -pthread flags differ, and env-wasm.sh
+# injects those via CVC_WASM_THREADS. Gate every emscripten-specific branch on
+# this rather than on the literal `wasm` platform, so wasm-mt takes the same path.
+IS_EMSCRIPTEN=false
+case "${CVC_PLATFORM}" in wasm|wasm-mt) IS_EMSCRIPTEN=true ;; esac
+
+# --- RPATH ---
+# Embed $ORIGIN/../lib so the installed python3.X binary finds:
+#   • libpython3.X.so  (installed alongside it in lib/)
+#   • libssl, libz, libffi, libsqlite3, etc. (merged into same prefix)
+case "${CVC_PLATFORM}" in
+    macos)
+        RPATH_SELF="@loader_path/../lib"
+        RPATH_DEPS="@loader_path/../lib"
+        ;;
+    *)
+        RPATH_SELF="\$ORIGIN/../lib"
+        RPATH_DEPS="\$ORIGIN/../lib"
+        ;;
+esac
+
+export PKG_CONFIG_PATH="${CVC_DEPS_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export CPPFLAGS="-I${CVC_DEPS_PREFIX}/include ${CPPFLAGS:-}"
+if [ "$IS_CROSS" = false ]; then
+    export LDFLAGS="-L${CVC_DEPS_PREFIX}/lib -Wl,-rpath,${RPATH_SELF} ${LDFLAGS:-}"
+fi
+
+# CPython bundles its own expat (Modules/expat) and finds every real dependency
+# in CVC_DEPS_PREFIX (via CPPFLAGS above / --with-openssl / pkg-config).  On the
+# BSDs env-<platform>.sh adds -I/usr/local/include so recipes that link ports
+# libraries can find their headers — but that path also carries a SYSTEM expat.h
+# (e.g. FreeBSD's expat-2.8.1), and it precedes -I./Modules/expat in CPython's
+# compile line.  pyexpat.c then compiles against the system header while linking
+# the bundled libexpat.a, and the resulting pyexpat.so cannot be imported:
+#   ImportError: ... pyexpat...: Undefined symbol "XML_ParserCreate_MM"
+# which cascades into ensurepip and fails the whole build (freebsd-build on the
+# dev cluster).  Strip /usr/local/include from CPython's OWN compile flags on the
+# native BSDs — nothing CPython builds needs a ports header, its deps are all in
+# CVC_DEPS_PREFIX, and dropping it lets the bundled expat win.  Verified on
+# freebsd-build: `import pyexpat` then loads the bundled expat_2.7.1.
+case "${CVC_PLATFORM}" in
+    freebsd|openbsd|netbsd)
+        export CFLAGS="${CFLAGS//-I\/usr\/local\/include/}"
+        export CXXFLAGS="${CXXFLAGS//-I\/usr\/local\/include/}"
+        ;;
+esac
+# FreeBSD and OpenBSD: the same for the link and for pkg-config, which the
+# builders' linkage gate (cvcpkg 2.5.12) refuses to pack otherwise.  env-<platform>.sh
+# also adds -L/usr/local/lib, and the published python312 cvc.20, python313 cvc.11
+# and python313t cvc.13 carry what it let in:
+#   - configure's AC_CHECK_LIB([intl]) found ports' gettext there, so python3.X and
+#     libpython3.X.so need /usr/local/lib/libintl.so.8 (and use nothing from it:
+#     libintl.h was already out of reach);
+#   - CPython links bin/python3.X with LDFLAGS ahead of its own -L. -lpython3.X, and
+#     OpenBSD's linker takes the first directory that has a libpython3.12.so.M.N, so
+#     python312 there linked the ports python's libpython3.12.so.0.0, not its own;
+#   - pkg-config searches /usr/local/lib/pkgconfig by default, so OpenBSD's _blake2
+#     linked ports' libb2.so.0.0.
+# Drop the -L, keep pkg-config to CVC_DEPS_PREFIX (PKG_CONFIG_LIBDIR replaces the
+# default search path, as the cffi recipes do), and turn libintl off below.  _blake2
+# then builds its vendored copy.  sysconfig's LDSHARED loses the -L too, which every
+# C extension built against this interpreter inherited (cffi cvc.4 had to strip it).
+# NetBSD's libintl.so.1 is in base, and its pkgsrc flags are handled next.
+case "${CVC_PLATFORM}" in
+    freebsd|openbsd)
+        export LDFLAGS="${LDFLAGS//-L\/usr\/local\/lib/}"
+        export PKG_CONFIG_LIBDIR="${CVC_DEPS_PREFIX}/lib/pkgconfig:${CVC_DEPS_PREFIX}/share/pkgconfig"
+        ;;
+esac
+# NetBSD: the same for pkgsrc's /usr/pkg, and for the link too.  CPython bakes
+# its build flags into sysconfig (CFLAGS, LDFLAGS, LDSHARED), and setuptools
+# puts those FIRST on every extension's command line, ahead of the extension's
+# own -I/-L and of the environment's flags.  With env-netbsd.sh's
+# -I/usr/pkg/include -L/usr/pkg/lib -Wl,-R/usr/pkg/lib in them, every C
+# extension later built against this interpreter took pkgsrc's headers and
+# libraries over cvcpkg's: cffi-cp312 linked pkgsrc's libffi.so.8 instead of
+# cvcpkg's libffi.so.12 and could not load, and pyyaml-cp312 came out without
+# libyaml (dev cluster, python312 cvc.15).  CPython needs nothing from pkgsrc
+# -- its deps are all in CVC_DEPS_PREFIX -- so it also stops picking up an
+# optional pkgsrc library (gdbm, ...) that happens to be installed.
+#
+# That -R/usr/pkg/lib was also, by accident, the room the RPATH post-fixup
+# below rewrites into.  Without it a stdlib extension's link-time RPATH is just
+# make's mangled "RIGIN/../lib" (12 bytes), patchelf's "$ORIGIN/../.." is 13,
+# and growing it adds the PT_LOAD NetBSD's ld.elf_so refuses ("math.cpython-
+# 312.so: wrong number of segments (3 != 2)", python312 cvc.16 on the dev
+# cluster).  So reserve the room explicitly, in LDFLAGS_NODIST: CPython links
+# itself and its stdlib modules with it but keeps it out of sysconfig, so no
+# later extension inherits it (see env-netbsd.sh, cvc_netbsd_prefix_first).
+if [ "${CVC_PLATFORM}" = "netbsd" ]; then
+    export CFLAGS="${CFLAGS//-I\/usr\/pkg\/include/}"
+    export CXXFLAGS="${CXXFLAGS//-I\/usr\/pkg\/include/}"
+    export CPPFLAGS="${CPPFLAGS//-I\/usr\/pkg\/include/}"
+    LDFLAGS="${LDFLAGS//-Wl,-R\/usr\/pkg\/lib/}"
+    export LDFLAGS="${LDFLAGS//-L\/usr\/pkg\/lib/}"
+    if [ "$IS_CROSS" = false ]; then
+        export LDFLAGS_NODIST="-Wl,-R${CVC_INSTALL_DIR}/lib:${CVC_DEPS_PREFIX}/lib${LDFLAGS_NODIST:+ ${LDFLAGS_NODIST}}"
+    fi
+fi
+
+# On macOS ensure the deployment target is propagated.
+if [[ "${CVC_PLATFORM}" == "macos" ]]; then
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+fi
+
+# --- Configure flags ---
+CONFIGURE_ARGS=(
+    --prefix="${CVC_INSTALL_DIR}"
+    --enable-shared
+    # pip is included in the stdlib; ensurepip bootstraps it at build time.
+    --with-ensurepip=upgrade
+    # Install to versioned paths: lib/python3.X/, bin/python3.X, etc.
+    # Multiple Python minor versions coexist in the same prefix this way.
+    --enable-ipv6
+)
+
+# OpenSSL for ssl/hashlib — the cvcpkg OpenSSL (openssldir=/etc/ssl, so CA
+# verification uses the host trust store). SKIPPED on PLAIN wasm only: its OpenSSL
+# is built no-threads (no pthreads), so it does not define OPENSSL_THREADS, and
+# CPython's _ssl/_hashlib hard-error against a non-thread-safe OpenSSL. Native,
+# wasi, cosmo — AND wasm-mt, whose OpenSSL is -pthread thread-safe — get it.
+if [ "${CVC_PLATFORM}" != "wasm" ]; then
+    CONFIGURE_ARGS+=(--with-openssl="${CVC_DEPS_PREFIX}" --with-ssl-default-suites=openssl)
+fi
+# wasm-mt: the emscripten config.site disables _ssl/_hashlib by default (written
+# for the plain-wasm no-TLS case). Now that a thread-safe wasm-mt OpenSSL exists,
+# force the modules back on — a command-line py_cv_module_* assignment overrides
+# the config.site's cached value. Gives the threaded browser/node CPython real TLS.
+if [ "${CVC_PLATFORM}" = "wasm-mt" ]; then
+    CONFIGURE_ARGS+=(py_cv_module__ssl=yes py_cv_module__hashlib=yes)
+fi
+
+# Cross-compilation targets: static-only, explicit host, no readline.
+if [ "$IS_CROSS" = true ]; then
+    # CPython's configure REQUIRES an explicit --build when cross-compiling
+    # ("configure: error: Cross compiling required --host=HOST-TUPLE and
+    # --build=ARCH"), even though it detects the build type — supply the build
+    # triple from the tree's config.guess (native host, unaffected by CC=emcc).
+    _build_triple="$(./config.guess)"
+    CONFIGURE_ARGS+=(--disable-shared --host="${CROSS_HOST}" --build="${_build_triple}")
+    # readline/ncurses not available on wasm/wasi/cosmo. NOTE: --with-readline
+    # only accepts editline|readline|no; the old "tkinter" value is invalid and
+    # CPython 3.12's configure rejects it ("proper usage is --with(out)-readline
+    # [=editline|readline|no]") — only reached once the earlier cross gates pass.
+    CONFIGURE_ARGS+=(--without-readline)
+
+    # Emscripten needs more than a host triple. CPython's cross-build wants:
+    #   (a) a NATIVE interpreter of the SAME version to run build-time scripts
+    #       (--with-build-python), since the cross python can't run on the host;
+    #   (b) a config.site of ac_cv_* answers for the feature checks configure
+    #       cannot run (a wasm conftest binary won't execute on the build host).
+    # CC/CXX/CFLAGS are emcc/emscripten here (env-wasm), so build the native
+    # helper in a side dir with the native toolchain and the emscripten flags
+    # stripped.
+    if [ "$IS_EMSCRIPTEN" = true ]; then
+        _NATIVE_PY="${CVC_SOURCE_DIR}/cross-build/build"
+        if [ ! -x "${_NATIVE_PY}/python" ]; then
+            echo "build-python(wasm): building a full native ${PYTHON_MINOR} build-python for --with-build-python"
+            mkdir -p "${_NATIVE_PY}"
+            # A FULL native build (not just the `python` target): the cross
+            # install runs this interpreter for compileall, so it needs its
+            # extension modules (math, etc.) — `make python` alone omits them
+            # ("ModuleNotFoundError: No module named 'math'").
+            ( cd "${_NATIVE_PY}" && \
+              env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u PKG_CONFIG_PATH \
+                  CC=cc CXX=c++ "${CVC_SOURCE_DIR}/configure" && \
+              env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+                  CC=cc CXX=c++ ${MAKE} -j"${CVC_JOBS}" )
+        fi
+        CONFIGURE_ARGS+=(--with-build-python="${_NATIVE_PY}/python")
+        _cfg_site="${CVC_SOURCE_DIR}/Tools/wasm/config.site-wasm32-emscripten"
+        [ -f "${_cfg_site}" ] && export CONFIG_SITE="${_cfg_site}"
+    fi
+else
+    # Use the wide-char ncurses (libncursesw) for curses + readline.
+    CONFIGURE_ARGS+=(--with-readline=readline)
+fi
+
+# Enable PGO on platforms where it's supported and reliable.
+# Disabled on BSD and cross-compile variants.
+case "${CVC_PLATFORM}" in
+    linux)
+        CONFIGURE_ARGS+=(--enable-optimizations)
+        ;;
+    macos)
+        CONFIGURE_ARGS+=(--enable-optimizations)
+        ;;
+esac
+
+# Free-threaded (no-GIL) build.
+if [ "${PYTHON_DISABLE_GIL}" = "1" ]; then
+    CONFIGURE_ARGS+=(--disable-gil)
+fi
+
+# [macos] Link nothing from outside cvcpkg and the OS.  CPython's configure
+# takes libintl (gettext), gdbm and a system libmpdec whenever it can find them,
+# and a Mac with Homebrew has all three: the x86_64 3.11/3.12/3.13/3.13t bundles
+# built before CI moved Homebrew aside loaded /usr/local/opt/gettext/lib/
+# libintl.8.dylib, /usr/local/opt/gdbm/lib/libgdbm*.dylib and
+# /usr/local/opt/mpdecimal/lib/libmpdec.4.dylib, and aborted on any Mac without
+# them.  Say so explicitly, so a local build on a developer's Mac is as clean as
+# CI's: no libintl (CPython only uses it for locale.bindtextdomain & co.), the
+# bundled libmpdec (below, for every platform), _dbm on macOS's own ndbm, and no
+# _gdbm.
+if [ "${CVC_PLATFORM}" = "macos" ]; then
+    CONFIGURE_ARGS+=(
+        ac_cv_lib_intl_textdomain=no
+        --with-dbmliborder=ndbm
+        py_cv_module__gdbm=n/a
+    )
+fi
+# [freebsd, openbsd] No libintl either: base has none, and the one in ports'
+# /usr/local/lib is not where the bundle is installed (see the LDFLAGS scrub above).
+case "${CVC_PLATFORM}" in
+    freebsd|openbsd) CONFIGURE_ARGS+=(ac_cv_lib_intl_textdomain=no) ;;
+esac
+# The bundled libmpdec everywhere.  From 3.13, configure defaults to
+# --with-system-libmpdec and takes one wherever pkg-config or a plain -lmpdec finds
+# it, and cvcpkg has no mpdecimal package.  So the published python313 cvc.11 and
+# python313t cvc.13 _decimal on FreeBSD and NetBSD need the host's libmpdec.so.4
+# (ports, pkgsrc), and the builders' linkage gate refused NetBSD's: pkgsrc's
+# pkg-config finds /usr/pkg/lib/pkgconfig/libmpdec.pc.  3.11 and 3.12 already
+# default to the bundled copy.
+CONFIGURE_ARGS+=(--without-system-libmpdec)
+
+# [wasm] Disable _decimal. CPython's emscripten build archives _decimal.o into
+# the static libpython3.X.a but does NOT archive its bundled libmpdec objects
+# (Modules/_decimal/libmpdec/*.o), so libpython carries undefined mpd_* symbols
+# (mpd_isspecial, mpd_version, ...) that break ANY final wasm app embedding it
+# (e.g. VolRover / the vtk-python-cp312 import harness — wasm-ld: undefined
+# symbol: mpd_isspecial). `decimal` is unused for the graphics/scene use case, so
+# disable it via CPython's own module-state knob (the same mechanism its wasm
+# config.site uses for unsupported modules) to keep libpython self-contained.
+# Keeping decimal would instead require archiving the bundled libmpdec — a
+# follow-up if the module is ever needed in the browser.
+case "${CVC_PLATFORM}" in
+    wasm|wasm-mt)
+        CONFIGURE_ARGS+=(py_cv_module__decimal=n/a)
+        ;;
+esac
+
+# [wasm] No ensurepip (configure takes the last --with-ensurepip). `make install`
+# runs ensurepip with the NATIVE build python, whose own site-packages is not
+# writable, so pip "defaults to user installation": it lands in the builder
+# account's ~/.local, never in the bundle, and once ~/.local has a pip every later
+# build reports "Requirement already satisfied" instead. No published wasm python
+# has shipped pip, and a pip for the wasm interpreter would be of no use; the
+# recipes do not declare one for wasm.
+if [ "$IS_EMSCRIPTEN" = true ]; then
+    CONFIGURE_ARGS+=(--with-ensurepip=no)
+fi
+
+# [wasm] Namespace all of the bundled expat. pyexpatns.h renames expat's API to
+# PyExpat_*, so the copy folded into libpython below can share a static link with
+# another expat. It misses two internals of expat 2.6 and later (2.7.1 in 3.12.10):
+# _INTERNAL_trim_to_complete_utf8_characters and g_reparseDeferralEnabledDefault.
+# VTK's bundled expat (libvtkexpat-9.5.a) leaves the same two unmangled, so the
+# pycvc_gl wasm host, which links both, failed on duplicate symbols once python312
+# cvc.23 archived expat. Upstream's pyexpatns.h still lacks them (3.12, 3.13, main).
+# pyexpatns.h is included (through expat_external.h) before either name is declared,
+# so these rename every declaration, definition and use. The fold below checks that
+# expat defines nothing else outside PyExpat_*.
+if [ "$IS_EMSCRIPTEN" = true ] && [ -f Modules/expat/pyexpatns.h ] \
+    && ! grep -q 'PyExpat_g_reparseDeferralEnabledDefault' Modules/expat/pyexpatns.h; then
+    cat >> Modules/expat/pyexpatns.h <<'EOF'
+
+/* cvcpkg (recipes/_common/build-python.sh): two internals upstream leaves out. */
+#define _INTERNAL_trim_to_complete_utf8_characters \
+        PyExpat__INTERNAL_trim_to_complete_utf8_characters
+#define g_reparseDeferralEnabledDefault PyExpat_g_reparseDeferralEnabledDefault
+EOF
+fi
+
+# wasm builds must go through the emscripten compiler wrappers
+# (emconfigure/emmake), which put emcc/em++ on CC/CXX. env-wasm.sh only prepares
+# the emsdk PATH (so cmake toolchain files resolve) — it does NOT set CC=emcc, so
+# a bare ./configure builds CPython with native cc and dies compiling
+# Python/emscripten_signal.c (emscripten.h not found). wasi/cosmo set CC via their
+# own env, so they configure/make bare.
+if [ "$IS_EMSCRIPTEN" = true ]; then
+    emconfigure ./configure "${CONFIGURE_ARGS[@]}"
+else
+    ./configure "${CONFIGURE_ARGS[@]}"
+fi
+
+# `make install` byte-compiles the stdlib serially (COMPILEALL_OPTS=-j1, from the
+# Makefile's -j0). From 3.12, compileall starts its worker pool through
+# multiprocessing's forkserver wherever the default start method is fork (Linux,
+# the BSDs, and the native build python a wasm install runs). The forkserver binds
+# an AF_UNIX socket at $TMPDIR/pymp-*/listener-*, and since cvcpkg 2.5.2 (#398) a
+# fleet build's TMPDIR is in its job dir, so that path is ~111 bytes, past
+# sun_path's 108 (104 on the BSDs). compileall died with "OSError: AF_UNIX path too
+# long", and CPython's Makefile ignores it (the line starts with `-`), so the
+# python312, python313 and python313t bundles built from 2026-10-19 on the BSDs,
+# 2026-11-02 on linux and 2026-11-08 on wasm have no stdlib .pyc at all (python312
+# linux cvc.19: 1,774 of 1,803 .py compiled, cvc.20: 0). Serially there is no pool
+# and nothing in TMPDIR, for a few seconds more. 3.11 never used the forkserver.
+if [ "$IS_EMSCRIPTEN" = true ]; then
+    # [wasm] make writes to a file, printed when it finishes. emcc runs node, and a
+    # node that writes to an inherited stdout or stderr pipe sets O_NONBLOCK on that
+    # pipe until it exits. The flag belongs to the pipe, so make and the compilers
+    # writing to it at the same time get a non-blocking pipe too. A fleet builder
+    # reads build output through a pipe, and when it falls behind (it was packing
+    # another job), their next write fails with EAGAIN: python312 wasm-mt died with
+    # "gmake: write error: stdout" (populate run 42416701287). A regular file
+    # ignores O_NONBLOCK.
+    _make_log="${CVC_SOURCE_DIR}/cvcpkg-make.log"
+    for _make_args in "-j ${CVC_JOBS}" "install COMPILEALL_OPTS=-j1"; do
+        _make_rc=0
+        # shellcheck disable=SC2086
+        emmake $MAKE ${_make_args} > "${_make_log}" 2>&1 || _make_rc=$?
+        cat "${_make_log}"
+        if [ "${_make_rc}" -ne 0 ]; then
+            echo "build-python(wasm): make ${_make_args} failed (exit ${_make_rc})" >&2
+            exit "${_make_rc}"
+        fi
+    done
+else
+    $MAKE -j "${CVC_JOBS}"
+    $MAKE install COMPILEALL_OPTS=-j1
+fi
+
+# --- Byte-code check ---
+# Fail here when the stdlib went uncompiled, since nothing else notices: CPython's
+# Makefile ignores a failed compileall, and the pack ships whatever is there. A
+# full install has all three .pyc (compileall -o 0 -o 1 -o 2) for 98-99% of the
+# stdlib's .py files; the rest is test data that is not meant to compile
+# (bad_coding*, badsyntax_*, test_lib2to3/data) and config-3.X-*/python-config.py.
+# site-packages (pip) is compiled on its own and not counted.
+_STDLIB_DIR="${CVC_INSTALL_DIR}/lib/python${PYTHON_LDVERSION}"
+[ -d "${_STDLIB_DIR}" ] || _STDLIB_DIR="${CVC_INSTALL_DIR}/lib/python${PYTHON_MINOR}"
+_n_py=0
+_n_compiled=0
+while IFS= read -r _py; do
+    _n_py=$((_n_py + 1))
+    _stem="${_py##*/}"
+    _n_pyc=0
+    for _pyc in "${_py%/*}/__pycache__/${_stem%.py}".*.pyc; do
+        if [ -e "${_pyc}" ]; then _n_pyc=$((_n_pyc + 1)); fi
+    done
+    if [ "${_n_pyc}" -ge 3 ]; then _n_compiled=$((_n_compiled + 1)); fi
+done < <(find "${_STDLIB_DIR}" -path "${_STDLIB_DIR}/site-packages" -prune -o -name '*.py' -type f -print)
+echo "build-python.sh: ${_n_compiled} of ${_n_py} stdlib .py files have their .pyc"
+if [ "${_n_py}" -eq 0 ] || [ $((_n_compiled * 10)) -lt $((_n_py * 9)) ]; then
+    echo "build-python.sh: the stdlib under ${_STDLIB_DIR#"${CVC_INSTALL_DIR}/"} is not byte-compiled; see make install's compileall output above" >&2
+    exit 1
+fi
+
+# [wasm] Fold CPython's bundled expat and HACL objects into the static libpython.
+# Same class of gap as _decimal/libmpdec: CPython's emscripten build archives the
+# builtin MODULE objects (pyexpat.o, sha2module.o, ...) into libpython3.X.a, but
+# the bundled code two of them call goes into side archives that only python.js's
+# own link uses: Modules/expat/libexpat.a (expat, renamed PyExpat_XML_* by
+# pyexpatns.h) and Modules/_hacl/libHacl_Hash_SHA2.a (python_hashlib_Hacl_Hash_SHA2_*).
+# So libpython carries undefined symbols that break ANY static app embedding it
+# (the pycvc_gl and ariglx wasm hosts link with -sERROR_ON_UNDEFINED_SYMBOLS=0, and
+# then xml.parsers.expat or hashlib.sha256() aborts the page). Archive them so the
+# builtin modules are self-contained. CPython builds in-source, so the objects sit
+# under CVC_SOURCE_DIR/Modules/{expat,_hacl}. MD5, SHA-1 and SHA-3 compile their
+# HACL file as part of the module and are in libpython already; `emar rs` replaces
+# that member with the same object.
+#
+# `make install` writes libpython3.X.a twice, to lib/ and to
+# lib/python3.X/config-3.X-wasm32-emscripten/, and consumers link lib/'s. This
+# used to fold into `find | head -1` only, which on the builder was the config/
+# copy: python312's wasm cvc.13 shipped SHA-2 there and not in lib/. Fold into
+# every copy, then check each: a bundled-library symbol (expat, HACL, libmpdec)
+# that the archive leaves undefined fails the build here, not an app's link.
+if [ "$IS_EMSCRIPTEN" = true ]; then
+    _bundled_objs="$(find "${CVC_SOURCE_DIR}/Modules/expat" "${CVC_SOURCE_DIR}/Modules/_hacl" -name '*.o' 2>/dev/null || true)"
+    _libpys="$(find "${CVC_INSTALL_DIR}" -name "libpython${PYTHON_MINOR}*.a" 2>/dev/null || true)"
+    if [ -z "${_libpys}" ]; then
+        echo "build-python(wasm): no libpython${PYTHON_MINOR}*.a under ${CVC_INSTALL_DIR}" >&2
+        exit 1
+    fi
+    _nm="${EMSDK}/upstream/bin/llvm-nm"
+    if [ ! -x "${_nm}" ]; then
+        echo "build-python(wasm): ${_nm} not found; cannot check libpython for undefined symbols" >&2
+        exit 1
+    fi
+    # The bundled expat must define nothing outside PyExpat_* (see pyexpatns.h above):
+    # a bare global clashes with any other expat in the same static link.
+    _expat_objs="$(find "${CVC_SOURCE_DIR}/Modules/expat" -name '*.o' 2>/dev/null || true)"
+    if [ -n "${_expat_objs}" ]; then
+        # shellcheck disable=SC2086
+        _bare="$("${_nm}" --defined-only --extern-only -j ${_expat_objs} 2>/dev/null \
+            | grep -vE '^$|:$|^PyExpat' | LC_ALL=C sort -u || true)"
+        if [ -n "${_bare}" ]; then
+            echo "build-python(wasm): the bundled expat defines $(printf '%s\n' "${_bare}" | wc -l) global(s) pyexpatns.h does not rename:" >&2
+            printf '  %s\n' ${_bare} >&2
+            exit 1
+        fi
+    fi
+    for _libpy in ${_libpys}; do
+        if [ -n "${_bundled_objs}" ]; then
+            # shellcheck disable=SC2086
+            emar rs "${_libpy}" ${_bundled_objs}
+            echo "build-python(wasm): archived $(printf '%s\n' ${_bundled_objs} | wc -l) bundled object(s) into ${_libpy#"${CVC_INSTALL_DIR}/"}"
+        fi
+        _gaps="$(LC_ALL=C comm -23 \
+            <("${_nm}" -u -j "${_libpy}" 2>/dev/null | LC_ALL=C sort -u) \
+            <("${_nm}" --defined-only -j "${_libpy}" 2>/dev/null | LC_ALL=C sort -u) \
+            | grep -E '^(PyExpat_|python_hashlib_|mpd_)' || true)"
+        if [ -n "${_gaps}" ]; then
+            echo "build-python(wasm): ${_libpy#"${CVC_INSTALL_DIR}/"} leaves $(printf '%s\n' "${_gaps}" | wc -l) bundled-library symbol(s) undefined:" >&2
+            printf '  %s\n' ${_gaps} >&2
+            exit 1
+        fi
+    done
+fi
+
+# --- Relocatable RPATH post-fixup (native only) ---
+# CPython's Makefile bakes the absolute build-time LDFLAGS rpath; patch
+# the installed binary so it uses $ORIGIN-relative paths instead.
+if [ "$IS_CROSS" = false ]; then
+    PY_BIN="${CVC_INSTALL_DIR}/bin/python${PYTHON_LDVERSION}"
+    if [[ "${CVC_PLATFORM}" != "macos" ]]; then
+        # ELF (Linux/BSD): overwrite the rpath with an $ORIGIN-relative path so
+        # the install is relocatable. CPython's Makefile otherwise bakes a
+        # make-MANGLED rpath — the $O in $ORIGIN is a make variable, so it
+        # expands to a broken "RIGIN/../lib" (RUNPATH). patchelf writes literal
+        # bytes and sidesteps make/shell $ORIGIN escaping entirely, so it is a
+        # REQUIRED build dependency here (declared per-recipe for linux/*bsd).
+        if ! command -v patchelf >/dev/null 2>&1; then
+            echo "build-python.sh: patchelf required on ${CVC_PLATFORM} but not found on PATH" >&2
+            exit 1
+        fi
+        patchelf --set-rpath '$ORIGIN/../lib' "${PY_BIN}"
+        # Extension modules (lib/pythonX.Y/**): point each back at the prefix
+        # lib/ (where libssl/libcrypto/libffi/... live). The depth varies —
+        # stdlib C extensions sit at lib/pythonX.Y/lib-dynload/ (needs
+        # $ORIGIN/../..) while site-packages/<pkg>/**.so are deeper — so a single
+        # fixed relative path is WRONG for lib-dynload (a uniform
+        # $ORIGIN/../../.. lands on the prefix ROOT, not lib/, so _ssl.so then
+        # loads the system libcrypto -> "OPENSSL_x.y.z not found"). Compute the
+        # correct $ORIGIN-relative path to lib/ per file. (cvcpkg's own relocation
+        # pass later PREPENDS $ORIGIN and preserves these $ORIGIN-relative entries.)
+        # The FREE-THREADED build installs its stdlib under the LDVERSION name
+        # (lib/python3.13t/), not lib/python3.13/ — so keying this off
+        # PYTHON_MINOR pointed `find` at a directory that does not exist. Under
+        # `set -o pipefail` that non-zero find failed the whole build, which is
+        # why python313t could not be rebuilt (and cascade-cancelled every
+        # -cp313t consumer); when it did not fail, the extension rpaths were
+        # simply never patched. Resolve the real directory, and guard with -d so
+        # a layout we do not expect degrades to "nothing to patch" instead of
+        # killing the build.
+        _STDLIB_DIR="${CVC_INSTALL_DIR}/lib/python${PYTHON_LDVERSION}"
+        [ -d "${_STDLIB_DIR}" ] || _STDLIB_DIR="${CVC_INSTALL_DIR}/lib/python${PYTHON_MINOR}"
+        # `realpath --relative-to` is GNU coreutils only; the BSD realpath in
+        # every *BSD base rejects it ("realpath: unknown option -- -") and, under
+        # set -e, fails the whole build after ensurepip has already run — the real
+        # openbsd python blocker behind libffi. Probe once and fall back to a
+        # lexical computation: every extension .so lives under CVC_INSTALL_DIR/lib,
+        # so the path back to lib/ is one ".." per path segment below it.
+        _HAVE_RELTO=0
+        realpath --relative-to=/ / >/dev/null 2>&1 && _HAVE_RELTO=1
+        if [ -d "${_STDLIB_DIR}" ]; then
+            find "${_STDLIB_DIR}" -name '*.so' -print0 \
+                | while IFS= read -r -d '' _so; do
+                    if [ "${_HAVE_RELTO}" = 1 ]; then
+                        _rel="$(realpath --relative-to="$(dirname "${_so}")" "${CVC_INSTALL_DIR}/lib")"
+                    else
+                        _sub="$(dirname "${_so}")"; _sub="${_sub#"${CVC_INSTALL_DIR}/lib/"}"
+                        _rel=""; _oldifs="$IFS"; IFS='/'
+                        for _seg in ${_sub}; do _rel="../${_rel}"; done
+                        IFS="${_oldifs}"; _rel="${_rel%/}"; [ -n "${_rel}" ] || _rel="."
+                    fi
+                    patchelf --set-rpath "\$ORIGIN/${_rel}" "${_so}" 2>/dev/null || true
+                  done
+        else
+            echo "build-python.sh: no stdlib dir under ${CVC_INSTALL_DIR}/lib — skipping rpath pass" >&2
+        fi
+    fi
+
+    if [[ "${CVC_PLATFORM}" == "macos" ]]; then
+        # Fix install_name on the framework-less shared build.
+        DYLIB="${CVC_INSTALL_DIR}/lib/libpython${PYTHON_LDVERSION}.dylib"
+        if [[ -f "$DYLIB" ]]; then
+            install_name_tool -id "@rpath/libpython${PYTHON_LDVERSION}.dylib" "$DYLIB"
+            install_name_tool -change \
+                "${CVC_INSTALL_DIR}/lib/libpython${PYTHON_LDVERSION}.dylib" \
+                "@rpath/libpython${PYTHON_LDVERSION}.dylib" \
+                "${PY_BIN}" 2>/dev/null || true
+        fi
+    fi
+
+    # Guarantee pip lands in the PACKAGE. --with-ensurepip=upgrade runs ensurepip during
+    # `make install`, but it invokes `./python -E -m ensurepip`: -E ignores PYTHON* env vars but NOT
+    # the user site (~/.local). On a builder whose account has a user-site pip, ensurepip resolves
+    # THAT ("Requirement already satisfied: pip in /home/.../.local/...") and installs NOTHING into the
+    # package — so python312 +cvc.11/+cvc.12 linux shipped with no site-packages/pip and
+    # `python -m pip` -> "No module named pip". Re-run ensurepip ISOLATED from the user site (-s +
+    # PYTHONNOUSERSITE) so it targets the package's own site-packages, and probe the same way (a bare
+    # `import pip` would also leak the builder's ~/.local pip and hide the gap). Bundled wheel, no
+    # network. Native only — this whole block is IS_CROSS=false (a cross PY_BIN can't run here).
+    if ! PYTHONNOUSERSITE=1 "${PY_BIN}" -s -c 'import pip' >/dev/null 2>&1; then
+        echo "build-python.sh: pip missing from the package — bootstrapping via ensurepip (isolated)"
+        PYTHONNOUSERSITE=1 "${PY_BIN}" -s -m ensurepip --upgrade >/dev/null 2>&1 ||
+            echo "build-python.sh: WARNING: ensurepip bootstrap failed" >&2
+    fi
+fi
+
+# --- pip only: no setuptools in the interpreter bundle ---
+# Python 3.11's ensurepip still installs setuptools (65.5.0) next to pip; 3.12
+# dropped it.  setuptools is its own cvcpkg package (setuptools-cp3XX), and
+# installing that over 3.11's left two setuptools dist-infos in one
+# site-packages.  The old one's entry points still name
+# setuptools.dist:check_test_suite, which setuptools 72 removed, so every
+# setup.py passing test_suite= failed with "module 'setuptools.dist' has no
+# attribute 'check_test_suite'" (gast-cp311 and pyrsistent-cp311, on every
+# platform, 2026-10-14).  Ship pip only, as the 3.12+ builds already do.
+_SITE="${CVC_INSTALL_DIR}/lib/python${PYTHON_LDVERSION}/site-packages"
+[ -d "${_SITE}" ] || _SITE="${CVC_INSTALL_DIR}/lib/python${PYTHON_MINOR}/site-packages"
+if [ -d "${_SITE}" ]; then
+    rm -rf "${_SITE}"/setuptools "${_SITE}"/setuptools-*.dist-info         "${_SITE}"/pkg_resources "${_SITE}"/_distutils_hack         "${_SITE}"/distutils-precedence.pth
+fi
+
+# --- Alias hygiene: keep version-specific builds side-by-side safe ---
+# Version-specific recipes must ship ONLY versioned binaries (python3.X,
+# pip3.X, ...) so that several minor versions can be installed into the same
+# prefix without fighting over the generic names. The generic
+# python3/python/pip3/pip aliases are owned by the `python3` meta-recipe
+# instead, which points them at a single default interpreter.
+#
+# CPython's `make install` and ensurepip create some of these generic
+# aliases; strip them here so they never end up in the staged tree.
+# (stage_bundle copies the whole install dir — package.files does not filter
+# it — so removing the files here is what actually prevents the collision.)
+cd "${CVC_INSTALL_DIR}/bin"
+rm -f python3 python python3-config pip3 pip 2>/dev/null || true
+if [ "${PYTHON_LDVERSION}" != "${PYTHON_MINOR}" ]; then
+    # Free-threaded (t) build: keep a short pythonXt alias (e.g. python3t).
+    MAJOR="${PYTHON_MINOR%%.*}"
+    ln -sf "python${PYTHON_LDVERSION}" "python${MAJOR}t" 2>/dev/null || true
+    # CRITICAL: a free-threaded `make install` ALSO installs the NON-suffixed versioned names
+    # (bin/python3.13, python3.13-config) — the free-threaded interpreter under the STANDARD name
+    # (its sysconfig platlib is lib/python3.13t/site-packages, Py_GIL_DISABLED=1). In a SHARED build
+    # prefix (the fleet builder) that bin/python3.13 SHADOWS the non-t python313 column's, so a non-t
+    # cpNN package build resolves the free-threaded interpreter (cvc_python_exe_for "3.13" ->
+    # bin/python3.13) and pip mis-installs the wheel to lib/python3.13t/site-packages — where the
+    # standard python3.13 cannot import it. That silently broke every non-t cp313 tool column
+    # (mpmath/pluggy/sympy/pytest/...) and cascaded to their consumers. A free-threaded column must
+    # ship ONLY the t-suffixed names, so remove the standard ones.
+    rm -f "python${PYTHON_MINOR}" "python${PYTHON_MINOR}-config" 2>/dev/null || true
+    # ensurepip names its console script pip3.X even in the free-threaded
+    # build; give it the t-suffixed name (pip3.13t) so it can never collide
+    # with the non-t interpreter's bin/pip3.X in a shared prefix. (Its
+    # shebang already runs the t interpreter — ensurepip ran under it.)
+    if [ -f "pip${PYTHON_MINOR}" ]; then
+        mv -f "pip${PYTHON_MINOR}" "pip${PYTHON_LDVERSION}"
+    fi
+    # The rest of what `make install` files under the standard names has the same
+    # problem.  lib/pkgconfig/python-3.13.pc (and -embed, python3.pc) are links
+    # to python-3.13t.pc, so in a shared prefix they replaced python313's and a
+    # non-t build's pkg-config compiled against include/python3.13t: numpy-cp313
+    # got Py_GIL_DISABLED and its extension needed _Py_DecRefShared, which the
+    # standard python3.13 does not export.  libpython3.so (the stable-ABI shim,
+    # which the free-threaded build does not support) would replace python313's,
+    # and pydoc3.13/idle3.13 would run the t interpreter under python313's names.
+    # Keep only the t-suffixed names.
+    for _tool in pydoc idle; do
+        rm -f "${_tool}${MAJOR}"
+        if [ -f "${_tool}${PYTHON_MINOR}" ]; then
+            mv -f "${_tool}${PYTHON_MINOR}" "${_tool}${PYTHON_LDVERSION}"
+        fi
+    done
+    rm -f "${CVC_INSTALL_DIR}/lib/pkgconfig/python-${PYTHON_MINOR}.pc" \
+          "${CVC_INSTALL_DIR}/lib/pkgconfig/python-${PYTHON_MINOR}-embed.pc" \
+          "${CVC_INSTALL_DIR}/lib/pkgconfig/python${MAJOR}.pc" \
+          "${CVC_INSTALL_DIR}/lib/pkgconfig/python${MAJOR}-embed.pc" \
+          "${CVC_INSTALL_DIR}/lib/libpython${MAJOR}.so" \
+          "${CVC_INSTALL_DIR}/lib/libpython${MAJOR}.dylib"
+fi

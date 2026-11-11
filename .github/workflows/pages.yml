@@ -1,50 +1,93 @@
-# Builds the static site and publishes it to GitHub Pages.
+# Builds the static site from the repository's cvcpkg recipes, tests it, and publishes it to
+# GitHub Pages. No node, npm or bundler: every third-party piece comes from cvcpkg.
+#   - MuJoCo 4.0 (wasm32, static) and CPython 3.12 + numpy + MuJoCo's Python package: the
+#     cvcpkg.org catalog.
+#   - ONNX Runtime Web, the site and the tpht-lab host: cvcpkg/recipes/ in this repository.
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
-# Requires package-lock.json in the repository (commit it after your first npm install).
+# Pull requests build and test; only main deploys.
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # The cvcpkg CLI release, pinned by version and sha256 (github.com/cy-pca/cvcpkg releases).
+  CVCPKG_VERSION: "2.5.13"
+  CVCPKG_SHA256: "c28b6d3f4446db9503045688032827524f0aac15c0004fd69de43c3d97a30239"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      PREFIX: ${{ github.workspace }}/../tpht-deps
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci               # postinstall copies ONNX Runtime wasm into public/ort
-      - run: npm test             # controller ports vs committed fixtures; no Python needed
-      - id: pages
-        uses: actions/configure-pages@v5
-      - run: npm run build
-        env:
-          # '/<repo>/' for project sites; '/' for a custom domain or <user>.github.io repo.
-          BASE_PATH: ${{ steps.pages.outputs.base_path }}/
+
+      - name: Install the cvcpkg CLI
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/cvcpkg" \
+            "https://github.com/cy-pca/cvcpkg/releases/download/cvcpkg-v${CVCPKG_VERSION}/cvcpkg-linux-x86_64"
+          echo "${CVCPKG_SHA256}  $RUNNER_TEMP/bin/cvcpkg" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/cvcpkg"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/cvcpkg" --version
+
+      - name: Install runtimes and tools from the cvcpkg catalog
+        run: |
+          set -euo pipefail
+          cvcpkg install python312 numpy-cp312 mujoco-core-cp312 setuptools-cp312 \
+            playwright-chromium-headless-shell --prefix "$PREFIX"
+          cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix "$PREFIX"
+
+      - name: Build the repository's recipes
+        run: |
+          set -euo pipefail
+          for r in onnxruntime-web tpht-viz-panel; do
+            cvcpkg build "$r" --platform any --local --recipes-dir cvcpkg/recipes \
+              --prefix "$PREFIX" --build-prefix "$PREFIX"
+          done
+          cvcpkg build tpht-lab-cp312 --local --recipes-dir cvcpkg/recipes \
+            --prefix "$PREFIX" --build-prefix "$PREFIX"
+
+      - name: Native MuJoCo checks on the site's assets
+        run: '"$PREFIX/bin/tpht-lab" check'
+
+      - name: Controller tests in headless Chromium
+        run: '"$PREFIX/bin/tpht-lab" test'
+
       - name: Report what will be published
         run: |
-          du -sh dist
-          find dist/assets -maxdepth 3 -type d | sort
-      - uses: actions/upload-pages-artifact@v3
+          du -sh "$PREFIX/share/tpht-viz-panel"
+          find "$PREFIX/share/tpht-viz-panel/assets" -maxdepth 2 -type d | sort
+          cat "$PREFIX/share/tpht-viz-panel/build-info.json"
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: ${{ env.PREFIX }}/share/tpht-viz-panel
 
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

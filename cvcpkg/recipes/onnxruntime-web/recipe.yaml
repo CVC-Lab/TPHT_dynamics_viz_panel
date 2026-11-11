@@ -1,0 +1,48 @@
+schema_version: 1
+recipe:
+  name: onnxruntime-web
+  upstream_version: "1.20.1"
+  cvc_revision: 1
+  maintainer: "CVC Lab"
+  maintainer_url: "https://github.com/CVC-Lab/TPHT_dynamics_viz_panel"
+  homepage: https://onnxruntime.ai
+  license: MIT
+  tags: [javascript, web, wasm, ml, data]
+  description: >-
+    ONNX Runtime Web 1.20.1, WebAssembly execution provider only: the ES-module entry
+    ort.wasm.min.mjs and its runtime ort-wasm-simd-threaded.{mjs,wasm}, from the npm package,
+    installed into share/onnxruntime-web/ with the package's package.json. The licence and
+    third-party notices (not in the npm tarball) come from the onnxruntime repository at tag
+    v1.20.1 and go to share/doc/onnxruntime-web/. The TPHT panel's CT-RL tab runs exported
+    policies with it; tools/build_site.py copies it to the site's vendor/ort/.
+
+source:
+  # The npm registry's tarball (package/ inside, stripped). The sha256 pins the bytes; its
+  # sha512 matches the registry's integrity field for onnxruntime-web@1.20.1. No npm is run.
+  type: tarball
+  url: https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.20.1.tgz
+  sha256: "0a38facf0672dfaaeaf352e8a9f44533732b60b4af93b9dd507fe7c2d2be437b"
+  strip_components: 1
+
+patches: []
+
+depends:
+  build: []
+  runtime: []
+  host_tools: []
+
+build:
+  build_type_independent: true
+  matrix:
+    # noarch: JavaScript and WebAssembly, identical on every platform. build.sh runs under
+    # Git Bash on a Windows host.
+    - platform: any
+      script: build.sh
+
+package:
+  files:
+    - share/onnxruntime-web/ort.wasm.min.mjs
+    - share/onnxruntime-web/ort-wasm-simd-threaded.mjs
+    - share/onnxruntime-web/ort-wasm-simd-threaded.wasm
+    - share/onnxruntime-web/package.json
+    - share/doc/onnxruntime-web/

@@ -3,6 +3,7 @@
 import { loadMujoco, loadModel, Sim, BackendError } from './mujoco_env.js';
 import { NativeController } from '../controllers/native.js';
 import { OnnxPolicy } from '../controllers/onnx_policy.js';
+import { DEMO_POLICY, SineGait } from '../controllers/demo_gait.js';
 import { privilegedScan } from '../controllers/gait.js';
 import { maxAbsDiff } from '../controllers/linalg.js';
 import { loadTraceIndex, loadTrace } from './traces.js';
@@ -74,7 +75,8 @@ async function init({ section, caseId }) {
     planes: S.meta.planes ?? [0],
     gaitLoaded: !!S.gait,
     traces: S.traces?.list ?? [],
-    policies: S.manifest.policies ?? [],
+    // Exported CT-RL policies first, then the built-in demo gait (ctrl only).
+    policies: section === 'ctrl' ? [...(S.manifest.policies ?? []), DEMO_POLICY] : (S.manifest.policies ?? []),
     target: S.target,
     timestep: S.sim.model.opt.timestep,
   });
@@ -112,12 +114,16 @@ async function reset({ method, clock, ghostMethod, initial }) {
     // dm_control randomizes the start pose; here every reset uses the model's qpos0.
     S.mj.mj_resetData(sim.model, sim.data);
     sim.forward(sim.data);
-    const entry = (S.manifest.policies ?? []).find((p) => p.id === method);
-    if (!entry) throw new BackendError('policy-missing', `No exported policy "${method}" in ctrl/manifest.json.`);
-    const meta = await fetchJSON(`ctrl/${entry.meta}`);
-    const onnx = await fetchAsset(`ctrl/${entry.onnx}`);
-    if (!onnx.ok) throw new BackendError('asset-missing', `Missing assets/ctrl/${entry.onnx}.`);
-    S.policy = await OnnxPolicy.create(new Uint8Array(await onnx.arrayBuffer()), meta);
+    if (method === DEMO_POLICY.id) {
+      S.policy = new SineGait(sim.nu);
+    } else {
+      const entry = (S.manifest.policies ?? []).find((p) => p.id === method);
+      if (!entry) throw new BackendError('policy-missing', `No exported policy "${method}" in ctrl/manifest.json.`);
+      const meta = await fetchJSON(`ctrl/${entry.meta}`);
+      const onnx = await fetchAsset(`ctrl/${entry.onnx}`);
+      if (!onnx.ok) throw new BackendError('asset-missing', `Missing assets/ctrl/${entry.onnx}.`);
+      S.policy = await OnnxPolicy.create(new Uint8Array(await onnx.arrayBuffer()), meta);
+    }
     S.controller = null;
   }
   S.x0 = sim.data.qpos[0];

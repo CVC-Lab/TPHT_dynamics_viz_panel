@@ -1,0 +1,7 @@
+{
+  "model": {
+    "kind": "xml",
+    "file": "cheetah.xml"
+  },
+  "meta": "cheetah_meta.json"
+}

@@ -1,0 +1,5 @@
+# Shell scripts run under bash on every host (Git Bash on Windows): keep LF in checkouts.
+*.sh text eol=lf
+*.wasm binary
+*.f32 binary
+*.mjb binary

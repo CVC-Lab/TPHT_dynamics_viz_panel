@@ -1,0 +1,53 @@
+schema_version: 1
+recipe:
+  name: tpht-viz-panel
+  upstream_version: "0.1.0"
+  cvc_revision: 1
+  maintainer: "CVC Lab"
+  maintainer_url: "https://github.com/CVC-Lab/TPHT_dynamics_viz_panel"
+  homepage: https://github.com/CVC-Lab/TPHT_dynamics_viz_panel
+  license: "GPL-3.0-only AND Apache-2.0 AND MIT"
+  tags: [web, wasm, robotics, physics, mujoco]
+  description: >-
+    The TPHT dynamics viz panel (cheetah baseline lab) as a finished static site in
+    share/tpht-viz-panel/: the page's ES modules, the exported assets, the in-browser test page,
+    MuJoCo 4.0's WebAssembly build (from cvcpkg's wasm mujoco, Apache-2.0) and ONNX Runtime Web's
+    wasm build (onnxruntime-web, MIT) in vendor/. No bundler, node or npm. Serve the directory
+    from any static host (GitHub Pages) or with `tpht-lab serve` (tpht-lab-cp312).
+
+# Build from the repository root, after putting the two runtimes into one prefix:
+#   cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix deps
+#   cvcpkg build onnxruntime-web --platform any --local --recipes-dir cvcpkg/recipes \
+#     --prefix deps --build-prefix deps
+#   cvcpkg build tpht-viz-panel --platform any --local --recipes-dir cvcpkg/recipes \
+#     --prefix deps --build-prefix deps
+# The site lands in deps/share/tpht-viz-panel/. tools/build_site.py does the same from a checkout.
+
+source:
+  # This repository. `path` is counted from cvcpkg/recipes/_vendored/, where `cvcpkg build`
+  # looks first, so `../../..` is the repository root (CVC_SOURCE_DIR).
+  type: vendored
+  path: ../../..
+
+patches: []
+
+depends:
+  # The site is noarch, but its MuJoCo is the wasm32 static bundle and cvcpkg's resolver
+  # pairs a noarch build with no wasm bundle, so these are not resolved for you: install them
+  # into the prefix as above and build with the default --no-deps.
+  build: []
+  # Nothing at run time: the bundle is finished page files.
+  runtime: []
+  host_tools: []
+
+build:
+  build_type_independent: true
+  matrix:
+    # noarch: HTML, JavaScript, JSON and WebAssembly, identical everywhere. build.sh runs
+    # under Git Bash on a Windows host.
+    - platform: any
+      script: build.sh
+
+package:
+  files:
+    - share/tpht-viz-panel/

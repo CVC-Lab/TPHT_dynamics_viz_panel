@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate fixtures for tests/*.test.mjs.
+"""Generate fixtures for tests/*.test.js (run in the browser by tests/index.html).
 
 bounded_ls below is copied verbatim from mujoco_reference/common.py (SciPy bvls).
 references/desired are line-for-line NumPy transcriptions of

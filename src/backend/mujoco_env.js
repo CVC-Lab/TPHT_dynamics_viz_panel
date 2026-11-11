@@ -1,21 +1,30 @@
-// Every call into @mujoco/mujoco goes through this file, so binding
-// differences between MuJoCo versions get fixed in one place. Each fallback
-// path is recorded and shown in the page's self-test panel.
+// Every call into MuJoCo's JavaScript bindings goes through this file, so
+// binding differences between MuJoCo versions get fixed in one place. Each
+// fallback path is recorded and shown in the page's self-test panel.
+//
+// The bindings are MuJoCo's official Embind build (what the @mujoco/mujoco npm
+// package ships), built from source by cvcpkg's `mujoco` wasm package and
+// copied to vendor/mujoco/ by tools/build_site.py. See the README.
+
+import { BASE } from '../base.js';
 
 export class BackendError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
+export const MUJOCO_URL = `${BASE}vendor/mujoco/mujoco.js`;
+
 export async function loadMujoco() {
   let mod;
   try {
-    mod = await import('@mujoco/mujoco');
+    mod = await import(MUJOCO_URL);
   } catch (e) {
     throw new BackendError('mujoco-missing',
-      `Could not import @mujoco/mujoco (${e.message}). Run "npm install" and open the page through "npm run dev".`);
+      `Could not import ${MUJOCO_URL} (${e.message}). Build the site with cvcpkg ` +
+      '(see README: "Build and run") and open it through "tpht-lab serve".');
   }
   const load = mod.default ?? mod.loadMujoco;
-  if (typeof load !== 'function') throw new BackendError('mujoco-api', '@mujoco/mujoco has no default loader export');
+  if (typeof load !== 'function') throw new BackendError('mujoco-api', 'MuJoCo module has no default loader export');
   return await load();
 }
 
@@ -35,11 +44,20 @@ export function loadModel(mj, asset) {
     if (has(M, 'from_xml_path')) return { model: M.from_xml_path(path), via: 'MjModel.from_xml_path' };
     return { model: M.from_xml_string(asset.data), via: 'MjModel.from_xml_string' };
   }
-  if (has(M, 'from_binary_path')) return { model: M.from_binary_path(path), via: 'MjModel.from_binary_path' };
-  if (has(mj, 'mj_loadModel')) return { model: mj.mj_loadModel(path, null), via: 'mj_loadModel' };
+  // The binary loaders take a virtual file system as their second argument
+  // (MjModel.from_binary_path(path, vfs) and MjModel.mj_loadModel(path, vfs)
+  // in mujoco.d.ts); calling them with the path alone throws. An empty VFS
+  // makes them read the file written to MEMFS above. A .mjb only loads in the
+  // MuJoCo version that wrote it, so prefer exporting XML.
+  const viaVfs = (name, fn) => {
+    const vfs = new mj.MjVFS();
+    try { return { model: fn(vfs), via: name }; } finally { vfs.delete?.(); }
+  };
+  if (has(M, 'from_binary_path')) return viaVfs('MjModel.from_binary_path', (vfs) => M.from_binary_path(path, vfs));
+  if (has(M, 'mj_loadModel')) return viaVfs('MjModel.mj_loadModel', (vfs) => M.mj_loadModel(path, vfs));
   const statics = Object.getOwnPropertyNames(M).filter((k) => typeof M[k] === 'function').join(', ');
   throw new BackendError('mjb-unsupported',
-    `This @mujoco/mujoco build exposes no binary loader (MjModel statics: ${statics}). Export XML instead (see README).`);
+    `This MuJoCo wasm build exposes no binary loader (MjModel statics: ${statics}). Export XML instead (see README).`);
 }
 
 export class Sim {
@@ -166,9 +184,14 @@ export class Sim {
         return null;
       }
     };
-    const viaBuffer = (call) => {
-      const buf = new mj.DoubleBuffer(new Array(n * n).fill(0));
-      try { call(buf); return Float64Array.from(buf.getView()); } finally { buf.delete(); }
+    // DoubleBuffer's constructor takes an element count (new DoubleBuffer(n),
+    // or DoubleBuffer.FromArray(array)), and its accessor is GetView(), capital
+    // G. The original new DoubleBuffer(array) / buf.getView() failed on every
+    // path, so the mass-matrix self-test and every reference controller that
+    // needs M (all of them) stopped here.
+    const viaBuffer = (call, size = n * n) => {
+      const buf = new mj.DoubleBuffer(size);
+      try { call(buf); return Float64Array.from(buf.GetView()); } finally { buf.delete(); }
     };
     return (
       tryPath('mj_fullM(m, d, M)', () => has(mj, 'mj_fullM') && viaBuffer((b) => mj.mj_fullM(model, d, b))) ||
@@ -178,7 +201,7 @@ export class Sim {
         const M = new Float64Array(n * n);
         for (let j = 0; j < n; j++) {
           const e = new Array(n).fill(0); e[j] = 1;
-          const col = viaBuffer((b) => mj.mj_mulM(model, d, b, e));
+          const col = viaBuffer((b) => mj.mj_mulM(model, d, b, e), n);
           for (let i = 0; i < n; i++) M[i * n + j] = col[i];
         }
         return M;

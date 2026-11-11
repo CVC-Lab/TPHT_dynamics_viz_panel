@@ -22,6 +22,7 @@ recipe:
 # Build from the repository root. Native (deps in their own prefix: the native and wasm
 # mujoco bundles both install lib/cmake/mujoco):
 #   cvcpkg install mujoco cmake ninja nlohmann-json googletest --prefix deps-native
+#   (Linux: add libglvnd; Windows: add powershell)
 #   cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
 #     --prefix deps-native --build-prefix deps-native
 # Wasm (into the site prefix, which holds the wasm32 mujoco; emsdk in a prefix of its own,
@@ -52,6 +53,9 @@ depends:
     - nlohmann-json
     - name: googletest
       platforms: [linux, macos, windows]
+    # MuJoCo's CMake package config calls find_dependency(OpenGL); Linux hosts may have no GL.
+    - name: libglvnd
+      platforms: [linux]
   runtime:
     # tpht-sim links libmujoco dynamically; the wasm module has MuJoCo inside it.
     - name: mujoco

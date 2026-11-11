@@ -155,7 +155,7 @@ cvcpkg install mujoco cmake ninja nlohmann-json googletest --prefix deps-native
 cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes --prefix deps-native --build-prefix deps-native
 ```
 
-On Windows, add `powershell` to the install line. The recipe runs the googletest suite before it installs anything. Then:
+On Linux, add `libglvnd` to the install line: MuJoCo's CMake package looks for OpenGL, and a server or CI image may have none. On Windows, add `powershell`. The recipe runs the googletest suite before it installs anything. Then:
 
 ```bash
 deps-native/bin/tpht-sim check --assets public/assets          # binding self-tests on every model

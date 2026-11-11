@@ -127,8 +127,10 @@ jobs:
           set -euo pipefail
           DEPS="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/tpht-native"
           echo "DEPS=$DEPS" >> "$GITHUB_ENV"
-          extra=""
-          [ "$RUNNER_OS" = Windows ] && extra="powershell"   # cvcpkg runs build.ps1 with pwsh 7
+          # Windows: cvcpkg runs build.ps1 with pwsh 7. Linux: MuJoCo's CMake package calls
+          # find_dependency(OpenGL), and the runner has no GL libraries; libglvnd provides them.
+          extra="libglvnd"
+          [ "$RUNNER_OS" = Windows ] && extra="powershell"
           cvcpkg install mujoco cmake ninja nlohmann-json googletest $extra --prefix "$DEPS"
           cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
             --prefix "$DEPS" --build-prefix "$DEPS"

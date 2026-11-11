@@ -4,6 +4,7 @@ import { test, assert, loadJSON } from './harness.js';
 import { boundedLS } from '../src/controllers/bvls.js';
 import { references, desiredAcceleration } from '../src/controllers/gait.js';
 import { interp } from '../src/controllers/linalg.js';
+import { makeNormal } from '../src/controllers/native.js';
 
 const load = (f) => loadJSON(new URL(`./fixtures/${f}`, import.meta.url));
 
@@ -33,6 +34,17 @@ test('gait references and acceleration target match the Python formulas', async 
     for (let i = 0; i < 9; i++) worst = Math.max(worst, Math.abs(d[i] - c.desired[i]) / Math.max(1, Math.abs(c.desired[i])));
   }
   assert.ok(worst < 1e-10, `max mismatch ${worst}`);
+});
+
+// Same reference values as cpp/tests/numerics_test.cpp (an independent Python
+// port of mulberry32 + Box-Muller), so MPC draws match across the backends.
+test('seeded MPC noise matches the Python and C++ generators', () => {
+  const randn = makeNormal(100000);
+  const want = [-0.03999378991677011, -1.7107233084267035, -1.460680052765154, -0.42671675085463895];
+  for (const w of want) {
+    const x = randn();
+    assert.ok(Math.abs(x - w) < 1e-15, `got ${x}, want ${w}`);
+  }
 });
 
 test('interp clamps like numpy.interp', () => {

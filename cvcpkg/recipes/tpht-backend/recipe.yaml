@@ -1,0 +1,88 @@
+schema_version: 1
+recipe:
+  name: tpht-backend
+  upstream_version: "0.1.0"
+  cvc_revision: 1
+  maintainer: "CVC Lab"
+  maintainer_url: "https://github.com/CVC-Lab/TPHT_dynamics_viz_panel"
+  homepage: https://github.com/CVC-Lab/TPHT_dynamics_viz_panel
+  # This repository's code is GPL-3.0-only. The wasm module links MuJoCo (Apache-2.0) and
+  # nlohmann-json (MIT) statically; their texts ship in share/licenses/tpht-backend/.
+  license: "GPL-3.0-only AND Apache-2.0 AND MIT"
+  tags: [robotics, physics, mujoco, wasm, simulation, control]
+  description: >-
+    The TPHT panel's C++ backend (cpp/ in this repository): MuJoCo 4.0's C API plus the
+    reference controllers of the cheetah benchmark (mujoco_ls, mujoco_fd_ls, CEM mujoco_mpc,
+    bounded least squares, gait references) and the CT-RL demo gait. Natively it installs
+    libtpht_core, its headers and the tpht-sim tool (check, run, golden on the site's
+    assets). For wasm it installs share/tpht-backend/wasm/tpht_backend.{js,wasm}, the
+    single-threaded Embind module that the page's worker runs (tools/build_site.py copies
+    it to vendor/tpht/).
+
+# Build from the repository root. Native (deps in their own prefix: the native and wasm
+# mujoco bundles both install lib/cmake/mujoco):
+#   cvcpkg install mujoco cmake ninja nlohmann-json googletest --prefix deps-native
+#   cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
+#     --prefix deps-native --build-prefix deps-native
+# Wasm (into the site prefix, which holds the wasm32 mujoco; emsdk in a prefix of its own,
+# because emsdk's activation drops every PATH entry under its root, cmake and ninja included):
+#   cvcpkg install emsdk --prefix deps-emsdk
+#   cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix deps
+#   cvcpkg install nlohmann-json cmake ninja --prefix deps
+#   CVC_EMSDK_DIR=$PWD/deps-emsdk PATH=$PWD/deps/bin:$PATH \
+#     cvcpkg build tpht-backend --platform wasm --local \
+#     --recipes-dir cvcpkg/recipes --prefix deps --build-prefix deps
+
+source:
+  # This repository. `path` is counted from cvcpkg/recipes/_vendored/, where `cvcpkg build`
+  # looks first, so `../../..` is the repository root (CVC_SOURCE_DIR); the CMake project is
+  # cpp/ inside it.
+  type: vendored
+  path: ../../..
+
+patches: []
+
+depends:
+  # With the default --no-deps of a local build these are not resolved for you: install
+  # them into the prefix as above.
+  build:
+    - cmake
+    - ninja
+    - mujoco
+    - nlohmann-json
+    - name: googletest
+      platforms: [linux, macos, windows]
+  runtime:
+    # tpht-sim links libmujoco dynamically; the wasm module has MuJoCo inside it.
+    - name: mujoco
+      platforms: [linux, macos, windows]
+  host_tools: []
+
+build:
+  matrix:
+    - platform: linux
+      script: build.sh
+    - platform: macos
+      script: build.sh
+      env:
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+    - platform: windows
+      script: build.ps1
+    # Single-threaded on purpose: GitHub Pages cannot send the COOP/COEP headers that a
+    # threaded (wasm-mt) module needs.
+    - platform: wasm
+      host_platform: linux
+      script: build-wasm.sh
+    - platform: wasm
+      host_platform: windows
+      script: build-wasm.ps1
+
+package:
+  files:
+    - { glob: "bin/tpht-sim", platforms: [linux, macos] }
+    - { glob: "bin/tpht-sim.exe", platforms: [windows] }
+    - { glob: "lib/libtpht_core.a", platforms: [linux, macos] }
+    - { glob: "lib/tpht_core.lib", platforms: [windows] }
+    - { glob: "include/tpht/", platforms: [linux, macos, windows] }
+    - { glob: "share/tpht-backend/wasm/", platforms: [wasm] }
+    - share/licenses/tpht-backend/

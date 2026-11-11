@@ -1,8 +1,10 @@
 # Builds the static site from the repository's cvcpkg recipes, tests it, and publishes it to
-# GitHub Pages. No node, npm or bundler: every third-party piece comes from cvcpkg.
-#   - MuJoCo 4.0 (wasm32, static) and CPython 3.12 + numpy + MuJoCo's Python package: the
-#     cvcpkg.org catalog.
-#   - ONNX Runtime Web, the site and the tpht-lab host: cvcpkg/recipes/ in this repository.
+# GitHub Pages; builds and tests the C++ backend natively. No node, npm or bundler: every
+# third-party piece comes from cvcpkg.
+#   - MuJoCo 4.0 (wasm32 static, and native), emsdk, cmake, ninja, nlohmann-json, googletest,
+#     CPython 3.12 + numpy + MuJoCo's Python package: the cvcpkg.org catalog.
+#   - The C++ backend (wasm and native), ONNX Runtime Web, the site and the tpht-lab host:
+#     cvcpkg/recipes/ in this repository.
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
 # Pull requests build and test; only main deploys.
 name: Deploy to GitHub Pages
@@ -30,6 +32,8 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PREFIX: ${{ github.workspace }}/../tpht-deps
+      # emsdk in a prefix of its own: its activation drops PATH entries under its root.
+      EMSDK_PREFIX: ${{ github.workspace }}/../tpht-emsdk
     steps:
       - uses: actions/checkout@v4
 
@@ -46,8 +50,16 @@ jobs:
         run: |
           set -euo pipefail
           cvcpkg install python312 numpy-cp312 mujoco-core-cp312 setuptools-cp312 \
-            playwright-chromium-headless-shell --prefix "$PREFIX"
+            nlohmann-json cmake ninja playwright-chromium-headless-shell --prefix "$PREFIX"
           cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix "$PREFIX"
+          cvcpkg install emsdk --prefix "$EMSDK_PREFIX"
+
+      - name: Build the C++ backend for the browser (wasm32)
+        run: |
+          set -euo pipefail
+          CVC_EMSDK_DIR="$EMSDK_PREFIX" PATH="$PREFIX/bin:$PATH" \
+            cvcpkg build tpht-backend --platform wasm --host-platform linux --local \
+            --recipes-dir cvcpkg/recipes --prefix "$PREFIX" --build-prefix "$PREFIX"
 
       - name: Build the repository's recipes
         run: |
@@ -80,6 +92,54 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ env.PREFIX }}/share/tpht-viz-panel
+
+  # The C++ backend natively: libtpht_core, tpht-sim and the googletest suite (run by the
+  # recipe before it installs), then tpht-sim on the repository's assets.
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cvcpkg CLI (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cvcpkg.org/install.sh \
+            | sh -s -- --install-dir "$RUNNER_TEMP/bin" --version "$CVCPKG_VERSION"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Install the cvcpkg CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ([scriptblock]::Create((irm https://cvcpkg.org/install.ps1))) -InstallDir "$env:RUNNER_TEMP\bin" -Version $env:CVCPKG_VERSION
+          "$env:RUNNER_TEMP\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build and test the C++ backend
+        run: |
+          set -euo pipefail
+          DEPS="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/tpht-native"
+          echo "DEPS=$DEPS" >> "$GITHUB_ENV"
+          extra=""
+          [ "$RUNNER_OS" = Windows ] && extra="powershell"   # cvcpkg runs build.ps1 with pwsh 7
+          cvcpkg install mujoco cmake ninja nlohmann-json googletest $extra --prefix "$DEPS"
+          cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
+            --prefix "$DEPS" --build-prefix "$DEPS"
+
+      - name: tpht-sim on the repository's assets
+        run: |
+          set -euo pipefail
+          export PATH="$DEPS/bin:$PATH"
+          tpht-sim version
+          tpht-sim check --assets public/assets
+          tpht-sim run --assets public/assets --section ctrl --seconds 12
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

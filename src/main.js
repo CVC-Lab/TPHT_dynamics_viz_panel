@@ -6,8 +6,10 @@ import { BASE, fetchAsset, setLocalAssets, assetEntriesFromFiles } from './base.
 const $ = (id) => document.getElementById(id);
 const ui = {
   status: $('status'), method: $('method'), caseSel: $('case'), clock: $('clock'), ghost: $('ghost'),
-  target: $('target'), scale: $('scale'), play: $('play'), access: $('access'),
+  target: $('target'), scale: $('scale'), play: $('play'), access: $('access'), backend: $('backend'),
 };
+// ?backend=js picks the JavaScript port; the C++ core is the default.
+ui.backend.value = new URLSearchParams(location.search).get('backend') === 'js' ? 'js' : 'cpp';
 const view = new Viewport($('viewport'));
 const strip = new Strip($('strip'));
 const state = { section: null, running: false, ready: false, policies: [], traces: [], results: null, frame: null };
@@ -42,6 +44,7 @@ worker.onerror = (e) => setStatus(`Worker failed to start: ${e.message}`, true);
 
 function onReady(m) {
   state.ready = true;
+  ui.backend.value = m.backend; // the worker may have fallen back to the JavaScript port
   state.traces = m.traces;
   state.policies = m.policies;
   view.setGround(m.profile, m.planes);
@@ -93,7 +96,7 @@ function loadSection(section) {
   if (section === 'reference') fillMethods(); // static list; ghosts fill in once traces load
   view.message = 'Loading…';
   view.draw(null);
-  send('init', { section, caseId: ui.caseSel.value });
+  send('init', { section, caseId: ui.caseSel.value, backend: ui.backend.value });
   if (section === 'reference') loadResults();
 }
 
@@ -252,6 +255,13 @@ window.addEventListener('hashchange', route);
 $('explain-list').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) showExplainer(b.dataset.id); });
 ui.method.addEventListener('change', () => { fillGhosts(); reset(); });
 ui.caseSel.addEventListener('change', () => { state.section = null; route(); });
+ui.backend.addEventListener('change', () => {
+  const url = new URL(location.href);
+  if (ui.backend.value === 'js') url.searchParams.set('backend', 'js'); else url.searchParams.delete('backend');
+  history.replaceState(null, '', url);
+  state.section = null;
+  route();
+});
 ui.clock.addEventListener('change', () => { fillGhosts(); reset(); });
 ui.ghost.addEventListener('change', reset);
 $('reset').onclick = reset;

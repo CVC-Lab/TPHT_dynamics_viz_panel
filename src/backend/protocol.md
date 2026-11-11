@@ -1,7 +1,7 @@
 # Page ↔ worker messages
 
 Page → worker
-- `init {section: 'reference'|'ctrl', caseId}` load MuJoCo, model, metadata, gait, trace index; runs self-tests
+- `init {section: 'reference'|'ctrl', caseId, backend: 'cpp'|'js'}` load the backend (C++ WebAssembly by default), model, metadata, gait, trace index; runs self-tests
 - `reset {method, clock, ghostMethod, initial: 'trace'|'sample'}` build controller or ONNX policy, set initial state
 - `start`, `pause`, `step` run in real time (scaled), stop, or advance one control decision
 - `set {target?, timeScale?, maxTime?, friction?, ctrlDt?}` live parameters
@@ -10,7 +10,7 @@ Page → worker
 
 Worker → page
 - `status {text}`, `error {code, message}`, `running {running}`
-- `ready {selfTests, profile, planes, gaitLoaded, traces, policies, target, timestep}`
+- `ready {backend, selfTests, profile, planes, gaitLoaded, traces, policies, target, timestep}` (`backend`: the one running; the first self-test names it)
 - `frame {t, segs, ghost, torsoX, speed, target, action, push, diag, stats}` at most ~30 Hz
 - `golden {caseId, clock, method, results: [{name, value, tol}]}`
 

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tpht-lab"
+version = "0.1.0"
+description = "Native host for the TPHT dynamics viz panel: serve the site, native MuJoCo checks, headless tests, asset export"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+# cvcpkg's mujoco-core-cp312 provides `import mujoco` (PyPI's mujoco 4.x is a metapackage over mujoco-core).
+dependencies = ["numpy", "mujoco-core>=4.0"]
+
+[project.optional-dependencies]
+# Only for `tpht-lab export gait|ctrl-policy` (the benchmark bundle's own environment).
+export = ["torch", "onnx", "onnxruntime", "gymnasium"]
+
+[project.scripts]
+tpht-lab = "tpht_lab.cli:main"
+
+[tool.setuptools]
+packages = ["tpht_lab"]

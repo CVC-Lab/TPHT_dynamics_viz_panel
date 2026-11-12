@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# recipes/_common/python-wheel.sh — per-interpreter wheel helper (Phase 7).
+#
+# cvcpkg ships several CPython interpreters as recipes (python311, python312,
+# python313, python313t).  A wheel package is a *matrix* of recipes — one
+# column per interpreter ABI (<name>-cp311 ... -cp313t), each depending on its
+# interpreter and installing into that interpreter's own site-packages inside
+# the prefix.  A column never touches another interpreter's tree: the old
+# cross-interpreter copy fan-out is gone (per-interpreter columns made it
+# meaningless).
+#
+# The wheel itself is fetched and sha256-verified by cvcpkg core (source.type
+# python_wheel) and handed to the build script already on disk, so the install
+# below runs fully offline (--no-index) and never re-resolves a pin.
+#
+# Usage in a wheel recipe's build.sh:
+#
+#     #!/usr/bin/env bash
+#     set -euo pipefail
+#     . "$(dirname "$0")/../_common/python-wheel.sh"
+#     cvc_pip_install_wheel
+#     cvc_python_check "import numpy; numpy.add(1, 2)"
+#
+# The recipe's `python:` block supplies CVC_PYTHON_ABI / CVC_PYTHON_INTERPRETER
+# (exported by the builder from the recipe); they can also be set directly.
+
+set -euo pipefail
+
+# Keep the builder account's user site (~/.local/lib/pythonX.Y/site-packages)
+# out of the build.  The prefix interpreter searches it AHEAD of its own
+# site-packages, and builders do have one (cvcpkg itself is often a
+# `pip install --user`).  With it visible, a PEP-517 backend or import missing
+# from the declared closure is found there instead of failing, so the build
+# passes on one builder and breaks on the next (pyinstaller-cp313's "No module
+# named 'pathspec'"), cvc_python_check can import a user-site copy instead of
+# the one being shipped, and anything that bundles what it can import ships
+# it: recipes/cvcpkg's PyInstaller froze sqlalchemy and brotli from there.
+#
+# An environment variable, not `-s`: pip runs the build backend in a child
+# interpreter, which inherits the environment but not the flag.  Set here
+# rather than in the builder's environment for every recipe, because a
+# non-Python build may still run a tool that lives in the user site: numpy's
+# and vtk-python's wasm builds run the builder's own cvcpkg, often a
+# `pip install --user` (neither sources this file).
+export PYTHONNOUSERSITE=1
+
+# Map a cvcpkg interpreter recipe name to the X.Y[t] version it reports.
+#
+#   python311  -> 3.11      python313t -> 3.13t
+#
+# This is authoritative even for an abi3 recipe, whose `abi` tag (abi3) carries
+# no version: the interpreter a wheel is *installed under* is named by the
+# recipe's `interpreter:` field, not by the ABI tag.
+cvc_interp_version() {
+  local interp="${1:?usage: cvc_interp_version <pythonNNN[t]>}"
+  local digits="${interp#python}"    # python313t -> 313t
+  local suffix=""
+  case "${digits}" in
+    *t) suffix="t"; digits="${digits%t}" ;;
+  esac
+  echo "${digits:0:1}.${digits:1}${suffix}"   # 313 -> 3.13(t)
+}
+
+# Echo the prefix interpreter executable for an X.Y[t] version.
+cvc_python_exe_for() {
+  local ver="${1:?usage: cvc_python_exe_for <X.Y[t]>}"
+  : "${CVC_DEPS_PREFIX:?CVC_DEPS_PREFIX must be set}"
+  local exe="${CVC_DEPS_PREFIX}/bin/python${ver}"
+  if [ ! -x "${exe}" ]; then
+    echo "cvc_python_exe_for: interpreter not found: ${exe}" >&2
+    echo "  (does this recipe depend on python${ver//./}?)" >&2
+    return 1
+  fi
+  echo "${exe}"
+}
+
+# Echo the target interpreter's executable inside $CVC_DEPS_PREFIX.
+#
+# The interpreter to install *under* is the recipe's `interpreter:` field
+# (CVC_PYTHON_INTERPRETER) — resolved against the *prefix* interpreter, never
+# the host's. For an ordinary cpNN column this equals the ABI's version; for a
+# column installing a stable-ABI wheel (abi: abi3) the tag carries no version,
+# so the interpreter field alone names the column's install target.
+cvc_python_exe() {
+  : "${CVC_PYTHON_INTERPRETER:?CVC_PYTHON_INTERPRETER must be set (recipe python.interpreter)}"
+  cvc_python_exe_for "$(cvc_interp_version "${CVC_PYTHON_INTERPRETER}")"
+}
+
+# True when the target ABI is the GIL-disabled one.
+cvc_python_is_free_threaded() {
+  case "${CVC_PYTHON_ABI:-}" in
+    *t) return 0 ;;
+    *)  return 1 ;;
+  esac
+}
+
+# Install the verified wheel into the prefix interpreter's site-packages.
+#
+# --no-deps:  transitive Python deps are themselves cvcpkg recipes, resolved by
+#             the depends graph — pip must not go behind cvcpkg's back.
+# --no-index: the artifact is already on disk and pinned; forbid any network
+#             resolution, which is what makes air-gapped installs work.
+cvc_pip_install_wheel() {
+  : "${CVC_SOURCE_DIR:?CVC_SOURCE_DIR must be set}"
+  : "${CVC_INSTALL_DIR:?CVC_INSTALL_DIR must be set}"
+
+  local py wheel
+  py="$(cvc_python_exe)"
+
+  # Shell glob, not `find -print -quit`: -quit is a GNU findutils extension the
+  # *BSD find does not implement (it errors out, which under set -e would abort
+  # the build).  A non-recursive *.whl glob is the maxdepth-1 equivalent.
+  wheel=""
+  for wheel in "${CVC_SOURCE_DIR}"/*.whl; do [ -e "${wheel}" ] && break; wheel=""; done
+  if [ -z "${wheel}" ]; then
+    echo "cvc_pip_install_wheel: no .whl in ${CVC_SOURCE_DIR}" >&2
+    return 1
+  fi
+
+  echo "installing $(basename "${wheel}") into ${CVC_INSTALL_DIR} using ${py}"
+  "${py}" -m pip install \
+    --no-deps \
+    --no-index \
+    --no-compile \
+    --ignore-installed \
+    --prefix "${CVC_INSTALL_DIR}" \
+    "${wheel}"
+}
+
+# Run a Python snippet under the target interpreter, with the wheel we just
+# installed importable.
+#
+# For a free-threaded ABI this asserts the GIL is actually *disabled* at
+# runtime (-X gil=0 / PYTHON_GIL=0) before running the snippet.  That check is
+# the substance of the no-GIL claim: a cp313t wheel that only imports under a
+# re-enabled GIL has not been shown to work without one, and cvcpkg would be
+# publishing an unproven guarantee.  If CPython refuses to disable the GIL
+# (e.g. an extension on the prefix forced it back on), the build fails here.
+cvc_python_check() {
+  local snippet="${1:?usage: cvc_python_check <python-snippet>}"
+  local py libdir
+  py="$(cvc_python_exe)"
+
+  # sysconfig would report the *interpreter's* own prefix, not the staging dir
+  # we just installed into, so locate the staged site-packages directly.  Two
+  # POSIX layouts exist, ONE PER ABI: a cp313 column belongs in
+  # lib/python3.13/site-packages, a cp313t column in lib/python3.13t/site-packages
+  # (Windows is Lib/site-packages, with no free-threaded split).  Resolve the dir
+  # by this column's EXACT ABI, never a `lib/python*` glob: a bare glob also
+  # matches the *sibling* ABI's dir, so a cp313 package that mislaid itself into
+  # lib/python3.13t/ -- which happens when a free-threaded interpreter shadows
+  # python3.13 in the build prefix at pip-install time -- would still be found,
+  # the import below would still pass, and we would publish an artifact that no
+  # standard-python3.13 consumer can import (it scans only lib/python3.13/).  That
+  # is the pycparser-cp313 mislaid-artifact bug.  Pinning the path turns it into a
+  # loud failure here instead of a silent publish.
+  local _abi="${CVC_PYTHON_ABI:?CVC_PYTHON_ABI must be set}"
+  local _d="${_abi#cp}" _t=""
+  case "${_d}" in *t) _t="t"; _d="${_d%t}" ;; esac
+  local _pymm="${_d:0:1}.${_d:1}"                    # cp313[t] -> 3.13
+  local _sib_t=""                                    # the sibling ABI it must NOT land in
+  if [ -z "${_t}" ]; then _sib_t="t"; fi
+  local _want="${CVC_INSTALL_DIR}/lib/python${_pymm}${_t}/site-packages"
+  local _sibling="${CVC_INSTALL_DIR}/lib/python${_pymm}${_sib_t}/site-packages"
+  if [ -d "${_want}" ]; then
+    libdir="${_want}"
+  elif [ -d "${CVC_INSTALL_DIR}/Lib/site-packages" ]; then
+    libdir="${CVC_INSTALL_DIR}/Lib/site-packages"    # Windows: single scheme, no ABI split
+  else
+    libdir=""
+  fi
+  if [ -z "${libdir}" ]; then
+    if [ -d "${_sibling}" ]; then
+      echo "cvc_python_check: ${_abi} staged its package under lib/python${_pymm}${_sib_t}/site-packages," >&2
+      echo "  but a ${_abi} column must install under lib/python${_pymm}${_t}/site-packages -- a mislaid" >&2
+      echo "  artifact a standard python${_pymm} consumer cannot import.  A python${_pymm}${_sib_t} interpreter" >&2
+      echo "  shadowed python${_pymm} at pip-install time; check the build prefix's bin/python${_pymm}." >&2
+    else
+      echo "cvc_python_check: no site-packages found under ${CVC_INSTALL_DIR}" >&2
+    fi
+    return 1
+  fi
+  export PYTHONPATH="${libdir}${PYTHONPATH:+:${PYTHONPATH}}"
+
+  if cvc_python_is_free_threaded; then
+    echo "verifying ${CVC_PYTHON_ABI} with the GIL disabled"
+    PYTHON_GIL=0 "${py}" -X gil=0 -c "
+import sys, sysconfig
+if not sysconfig.get_config_var('Py_GIL_DISABLED'):
+    sys.exit('${CVC_PYTHON_ABI}: interpreter is not a free-threaded build')
+if sys._is_gil_enabled():
+    sys.exit('${CVC_PYTHON_ABI}: GIL was re-enabled at runtime; no-GIL support unproven')
+print('GIL disabled:', not sys._is_gil_enabled())
+${snippet}
+print('${CVC_PYTHON_ABI} check OK (GIL disabled)')
+"
+  else
+    # Symmetric to the free-threaded assertion above: a NON-t column must install
+    # under the standard (GIL-enabled) interpreter. If the build environment ever
+    # resolves pythonX.Y to a free-threaded build, its purelib is
+    # lib/pythonX.Yt/site-packages and the module lands there instead of
+    # lib/pythonX.Y/site-packages -- the import check would still pass (the wheel
+    # imports fine under either), silently publishing a mislaid artifact. Fail
+    # loudly instead. (platformdirs-cp313 +cvc.2 shipped this way; this build helper had no guard for it.)
+    "${py}" -c "
+import sys, sysconfig
+if sysconfig.get_config_var('Py_GIL_DISABLED'):
+    sys.exit('${CVC_PYTHON_ABI}: interpreter is free-threaded; a non-t column must build '
+             'under the standard interpreter or its module lands in lib/pythonX.Yt/site-packages')
+${snippet}
+print('${CVC_PYTHON_ABI} check OK')
+"
+  fi
+}

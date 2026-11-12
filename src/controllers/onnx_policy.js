@@ -3,12 +3,16 @@
 
 import { BASE } from '../base.js';
 
+// ONNX Runtime Web comes from the cvcpkg recipe cvcpkg/recipes/onnxruntime-web
+// (the pinned npm tarball, no npm involved) and is copied to vendor/ort/ by
+// tools/build_site.py. ort.wasm.min.mjs is the WebAssembly-only build; its
+// runtime (ort-wasm-simd-threaded.{mjs,wasm}) sits beside it.
 let ortPromise = null;
 async function loadOrt() {
   if (!ortPromise) {
-    ortPromise = import('onnxruntime-web').then((ort) => {
-      ort.env.wasm.wasmPaths = `${BASE}ort/`; // copied by tools/copy-ort-wasm.mjs
-      ort.env.wasm.numThreads = 1;
+    ortPromise = import(`${BASE}vendor/ort/ort.wasm.min.mjs`).then((ort) => {
+      ort.env.wasm.wasmPaths = `${BASE}vendor/ort/`;
+      ort.env.wasm.numThreads = 1; // GitHub Pages cannot send the COOP/COEP headers threads need
       return ort;
     });
   }

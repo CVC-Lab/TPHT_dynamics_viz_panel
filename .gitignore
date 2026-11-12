@@ -1,7 +1,16 @@
-node_modules/
-dist/
-public/ort/
-# Large or checkpoint-derived assets; regenerate with tools/export_web_assets.py
+# Build output (python tools/build_site.py --out build/site, or the cvcpkg recipe)
+build/
+# cvcpkg prefixes, if you keep them in the checkout
+deps/
+deps.build/
+__pycache__/
+*.egg-info/
+# MuJoCo writes its warnings here, in whatever directory it runs from
+MUJOCO_LOG.TXT
+
+# Assets that stay off the public site (see "What ends up public" in the README).
 public/assets/reference/models/
 public/assets/reference/gait/
-public/assets/ctrl/
+# CT-RL policies stay private. The dm_control cheetah next to them is public
+# (Apache-2.0, from `tpht-lab export ctrl-model`) and is committed.
+public/assets/ctrl/policies/

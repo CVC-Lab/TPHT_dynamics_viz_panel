@@ -1,16 +1,15 @@
-// Run with: npm test  (node --test). Fixtures: python3 tools/make_test_fixtures.py
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+// Runs in the browser: tests/index.html (tpht-lab serve) or tpht-lab test (headless).
+// Fixtures: python tools/make_test_fixtures.py
+import { test, assert, loadJSON } from './harness.js';
 import { boundedLS } from '../src/controllers/bvls.js';
 import { references, desiredAcceleration } from '../src/controllers/gait.js';
 import { interp } from '../src/controllers/linalg.js';
 
-const load = (f) => JSON.parse(readFileSync(new URL(`./fixtures/${f}`, import.meta.url)));
+const load = (f) => loadJSON(new URL(`./fixtures/${f}`, import.meta.url));
 
-test('boundedLS matches scipy lsq_linear(method="bvls") on 400 cheetah-shaped problems', () => {
+test('boundedLS matches scipy lsq_linear(method="bvls") on 400 cheetah-shaped problems', async () => {
   let worst = 0, worstRes = 0;
-  for (const c of load('bvls_cases.json')) {
+  for (const c of await load('bvls_cases.json')) {
     const { action, diagnostics } = boundedLS(c.J, c.offset, c.desired, 0.01, c.low, c.high);
     for (let i = 0; i < 6; i++) worst = Math.max(worst, Math.abs(action[i] - c.x[i]));
     worstRes = Math.max(worstRes, Math.abs(diagnostics.weighted_acceleration_residual - c.residual) / Math.max(1, c.residual));
@@ -20,8 +19,8 @@ test('boundedLS matches scipy lsq_linear(method="bvls") on 400 cheetah-shaped pr
   assert.ok(worstRes < 1e-9, `residual mismatch ${worstRes}`);
 });
 
-test('gait references and acceleration target match the Python formulas', () => {
-  const { options, limits, cases } = load('gait_cases.json');
+test('gait references and acceleration target match the Python formulas', async () => {
+  const { options, limits, cases } = await load('gait_cases.json');
   let worst = 0;
   for (const c of cases) {
     const r = references(c.p, c.phase, limits);

@@ -1,15 +1,14 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { test, assert, loadJSON, loadBytes, exists } from './harness.js';
 import { makeTrace } from '../src/backend/traces.js';
 
-const dir = new URL('../public/assets/reference/traces/', import.meta.url);
+// The built site serves public/assets/ as assets/; the repository checkout keeps it under public/.
+const dir = new URL('../assets/reference/traces/', import.meta.url);
 
-test('binary traces round-trip the exported rows', { skip: !existsSync(new URL('manifest.json', dir)) }, () => {
-  const index = JSON.parse(readFileSync(new URL('manifest.json', dir)));
+test('binary traces round-trip the exported rows', { skip: async () => !(await exists(new URL('manifest.json', dir))) }, async () => {
+  const index = await loadJSON(new URL('manifest.json', dir));
   assert.equal(index.list.length, 20);
   for (const entry of index.list) {
-    const raw = readFileSync(new URL(entry.file, dir));
+    const raw = await loadBytes(new URL(entry.file, dir));
     const buf = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
     const t = makeTrace(buf, index.columns, entry);
     assert.equal(t.n, entry.rows);

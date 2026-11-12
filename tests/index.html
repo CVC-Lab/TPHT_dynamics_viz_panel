@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TPHT panel tests</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; background: #fff; color: #111; }
+    h1 { font-size: 1.2rem; }
+    #summary { font-weight: 600; }
+    body[data-status="pass"] #summary { color: #0a7a2f; }
+    body[data-status="fail"] #summary { color: #b00020; }
+    ul { list-style: none; padding: 0; font-family: ui-monospace, monospace; white-space: pre-wrap; }
+    li.fail { color: #b00020; }
+    li.skip { color: #777; }
+  </style>
+</head>
+<body data-status="running">
+  <h1>TPHT dynamics viz panel: controller tests</h1>
+  <p id="summary">running...</p>
+  <ul id="results"></ul>
+  <script type="module">
+    import { run } from './harness.js';
+    // Each test file registers its tests when imported.
+    await import('./controllers.test.js');
+    await import('./traces.test.js');
+    let report;
+    try {
+      report = await run(document.getElementById('results'));
+    } catch (e) {
+      document.getElementById('summary').textContent = `harness error: ${e.message}`;
+      document.body.dataset.status = 'fail';
+      report = { results: [], summary: `harness error: ${e.message}`, failed: 1 };
+    }
+    // `tpht-lab test` opens this page with ?report=1 and collects the results from this POST.
+    if (new URLSearchParams(location.search).has('report')) {
+      await fetch('../__results', { method: 'POST', body: JSON.stringify(report) });
+    }
+  </script>
+</body>
+</html>

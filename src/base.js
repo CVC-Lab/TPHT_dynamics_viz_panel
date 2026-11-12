@@ -1,6 +1,8 @@
-// Where the site lives: '/' in `npm run dev`, '/<repo>/' on a GitHub Pages
-// project site (set by BASE_PATH at build time, see vite.config.js).
-export const BASE = (import.meta.env && import.meta.env.BASE_URL) || '/';
+// Where the site lives: the directory above src/, wherever the site is served
+// from ('/' locally, '/<repo>/' on a GitHub Pages project site). Derived from
+// this module's own URL, so it is right in the page and in the Web Worker alike
+// and needs no build step to set it.
+export const BASE = new URL('../', import.meta.url).href;
 
 // Files a lab member picked from their own exported assets folder. They are
 // never uploaded: they stay in this tab and take precedence over deployed files.

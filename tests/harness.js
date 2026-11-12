@@ -6,7 +6,8 @@
 const registry = [];
 
 // test(name, fn) or test(name, {skip}, fn). skip may be a boolean or an async
-// function returning one (fetch-based existence checks are async here).
+// function returning one (fetch-based existence checks are async here). A test
+// may return a string, shown with its result (measured values, for example).
 export function test(name, opts, fn) {
   if (typeof opts === 'function') { fn = opts; opts = {}; }
   registry.push({ name, opts: opts ?? {}, fn });
@@ -53,7 +54,10 @@ export async function run(out) {
     try {
       const skip = typeof t.opts.skip === 'function' ? await t.opts.skip() : t.opts.skip;
       if (skip) status = 'skip';
-      else await t.fn();
+      else {
+        const note = await t.fn();
+        if (typeof note === 'string') detail = note;
+      }
     } catch (e) {
       status = 'fail';
       detail = e?.message ?? String(e);

@@ -1,0 +1,136 @@
+{
+ "_note": "A gait.json for dm_control's cheetah, for tests only: the feedback gains of gait_cases.json, a mild trot and small MPC settings. The benchmark's gait.json files come from final.pt (tools/export_web_assets.py gait). Used by cpp/tests/sim_test.cpp and tests/backend.test.js.",
+ "gait": [
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.3,
+  0.3,
+  0.3,
+  0.3,
+  0.3,
+  0.3,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  2.0
+ ],
+ "low": [
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  -1.0,
+  0.5
+ ],
+ "high": [
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  4.0
+ ],
+ "scale": [
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.1,
+  0.2
+ ],
+ "limits": [
+  [
+   -0.52,
+   1.05
+  ],
+  [
+   -0.785,
+   0.785
+  ],
+  [
+   -0.4,
+   0.785
+  ],
+  [
+   -1.0,
+   0.7
+  ],
+  [
+   -1.2,
+   0.87
+  ],
+  [
+   -0.5,
+   0.5
+  ]
+ ],
+ "options": {
+  "joint_kp": 60.0,
+  "joint_kd": 12.0,
+  "height_kp": 60.0,
+  "height_kd": 12.0,
+  "pitch_kp": 50.0,
+  "pitch_kd": 10.0,
+  "speed_kd": 3.0,
+  "target_clearance": 0.55,
+  "feedback_ridge": 0.01,
+  "planning_dt": 0.05,
+  "horizon_steps": 4,
+  "iterations": 2,
+  "candidates": 8,
+  "elites": 3,
+  "replan_seconds": 0.2,
+  "speed_weight": 1.0,
+  "clearance_weight": 4.0,
+  "pitch_weight": 2.0,
+  "effort_weight": 0.01,
+  "uncertainty_weight": 1.0,
+  "progress_weight": 1.0
+ }
+}

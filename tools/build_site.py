@@ -2,9 +2,12 @@
 """Assemble the static site from this repository and cvcpkg prefixes.
 
 No bundler, no node and no npm: the app is plain ES modules that the browser
-loads as they are, and its two third-party runtimes come from cvcpkg packages:
+loads as they are, and its compiled parts come from cvcpkg packages:
 
+  tpht-backend     (wasm)   share/tpht-backend/wasm/tpht_backend.{js,wasm} -> vendor/tpht/
+                            this repository's C++ core (cpp/), the default backend
   mujoco           (wasm)   share/mujoco/wasm/mujoco.{js,wasm}       -> vendor/mujoco/
+                            MuJoCo's Embind build, for the JavaScript port
   onnxruntime-web  (noarch) share/onnxruntime-web/ort.wasm.min.mjs  -> vendor/ort/
                             + ort-wasm-simd-threaded.{mjs,wasm}
 
@@ -15,12 +18,12 @@ Layout of OUT (what GitHub Pages or `tpht-lab serve` publishes):
 
   index.html, src/          the app, unchanged (paths are relative to src/base.js)
   assets/, explain/         copied from public/, as Vite used to
-  vendor/mujoco/, vendor/ort/   the runtimes, with their licence texts
+  vendor/tpht/, vendor/mujoco/, vendor/ort/   the runtimes, with their licence texts
   tests/                    only with --with-tests (the in-browser test page)
   build-info.json           versions and the git commit
 
 Usage:
-  python tools/build_site.py --prefix <cvcpkg prefix> [--prefix ...] --out <dir> [--with-tests]
+  python tools/build_site.py --prefix <cvcpkg prefix> [--prefix ...] --out <dir> [--with-tests] [--without-cpp]
 
 The cvcpkg recipe cvcpkg/recipes/tpht-viz-panel runs this; see the README.
 """
@@ -36,6 +39,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+TPHT_FILES = ('tpht_backend.js', 'tpht_backend.wasm')
 MUJOCO_FILES = ('mujoco.js', 'mujoco.wasm')
 ORT_FILES = ('ort.wasm.min.mjs', 'ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm')
 
@@ -88,6 +92,32 @@ def vendor_mujoco(prefixes: list[Path], out: Path) -> str | None:
     return read_version_cmake(prefix / 'lib' / 'cmake' / 'mujoco' / 'mujocoConfigVersion.cmake')
 
 
+def vendor_tpht(prefixes: list[Path], out: Path) -> str | None:
+    prefix = find_prefix(prefixes, 'share/tpht-backend/wasm', TPHT_FILES)
+    if prefix is None:
+        fail(f'no prefix in {[str(p) for p in prefixes]} has share/tpht-backend/wasm/tpht_backend.{{js,wasm}}: '
+             'build the C++ backend for wasm first (cvcpkg build tpht-backend --platform wasm '
+             '--local --recipes-dir cvcpkg/recipes --prefix ...; see the README), or pass --without-cpp '
+             'for a site that runs the JavaScript port only')
+    src = prefix / 'share' / 'tpht-backend' / 'wasm'
+    dst = out / 'vendor' / 'tpht'
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in TPHT_FILES:
+        shutil.copy2(src / f, dst / f)
+    # The module links MuJoCo (Apache-2.0) and nlohmann-json (MIT) statically.
+    for pkg in ('mujoco', 'nlohmann-json'):
+        for p in prefixes:
+            lic = p / 'share' / 'licenses' / pkg
+            if lic.is_dir():
+                copy_tree(lic, dst / 'LICENSES' / pkg)
+                break
+    info = src / 'build-info.json'
+    if info.is_file():
+        shutil.copy2(info, dst / 'build-info.json')
+        return json.loads(info.read_text(encoding='utf-8')).get('version')
+    return None
+
+
 def vendor_ort(prefixes: list[Path], out: Path) -> str | None:
     prefix = find_prefix(prefixes, 'share/onnxruntime-web', ORT_FILES)
     if prefix is None:
@@ -115,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--out', required=True, type=Path, help='output directory (replaced)')
     p.add_argument('--src', type=Path, default=REPO, help='repository root (default: this checkout)')
     p.add_argument('--with-tests', action='store_true', help='also copy tests/ for the in-browser test page')
+    p.add_argument('--without-cpp', action='store_true',
+                   help='leave out the C++ backend (the page then runs the JavaScript port)')
     args = p.parse_args(argv)
 
     src, out = args.src.resolve(), args.out.resolve()
@@ -136,18 +168,25 @@ def main(argv: list[str] | None = None) -> int:
         copy_tree(src / 'tests', out / 'tests', ignore=shutil.ignore_patterns('__pycache__', '*.py'))
 
     info = dict(
+        tpht_backend=None if args.without_cpp else vendor_tpht(prefixes, out),
         mujoco=vendor_mujoco(prefixes, out),
         onnxruntime_web=vendor_ort(prefixes, out),
         commit=git_commit(src),
         tests=args.with_tests,
     )
+    if args.with_tests and args.without_cpp:
+        # The test page compares the two backends; without the C++ module it would fail.
+        (out / 'tests' / 'backend.test.js').write_text(
+            "import { test } from './harness.js';\n"
+            "test('C++ backend (left out with --without-cpp)', { skip: true }, () => {});\n", encoding='utf-8')
     (out / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n', encoding='utf-8')
 
     assets = out / 'assets'
     published = sorted(str(d.relative_to(out)).replace('\\', '/')
                        for d in [*assets.glob('*'), *assets.glob('*/*')] if d.is_dir())
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
-    print(f'build_site: {out} ({size / 1e6:.1f} MB), MuJoCo {info["mujoco"]}, '
+    cpp = 'left out' if args.without_cpp else info['tpht_backend'] or '?'
+    print(f'build_site: {out} ({size / 1e6:.1f} MB), C++ backend {cpp}, MuJoCo {info["mujoco"]}, '
           f'onnxruntime-web {info["onnxruntime_web"]}')
     print('build_site: published asset folders: ' + (', '.join(published) or '(none)'))
     return 0

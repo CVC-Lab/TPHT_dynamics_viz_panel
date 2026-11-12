@@ -24,6 +24,7 @@
     // Each test file registers its tests when imported.
     await import('./controllers.test.js');
     await import('./traces.test.js');
+    await import('./backend.test.js');
     let report;
     try {
       report = await run(document.getElementById('results'));

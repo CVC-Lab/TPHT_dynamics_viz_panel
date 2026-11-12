@@ -1,8 +1,7 @@
 # Build output (python tools/build_site.py --out build/site, or the cvcpkg recipe)
 build/
 # cvcpkg prefixes, if you keep them in the checkout
-deps/
-deps.build/
+deps*/
 __pycache__/
 *.egg-info/
 # MuJoCo writes its warnings here, in whatever directory it runs from

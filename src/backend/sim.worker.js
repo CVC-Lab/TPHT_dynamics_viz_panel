@@ -1,18 +1,19 @@
 // Runs in a Web Worker so long MPC decisions never block the page.
-// Protocol: see src/backend/protocol.md.
-import { loadMujoco, loadModel, Sim, BackendError } from './mujoco_env.js';
-import { NativeController } from '../controllers/native.js';
+// Protocol: see src/backend/protocol.md. The model, its state and the
+// controllers live in a backend (backends.js): the C++ core compiled to
+// WebAssembly by default, or the JavaScript port. This file keeps the clock,
+// the messages, the recorded traces, the ONNX policies and the statistics.
+import { BackendError } from './mujoco_env.js';
+import { BACKENDS, backendKind } from './backends.js';
 import { OnnxPolicy } from '../controllers/onnx_policy.js';
-import { DEMO_POLICY, SineGait } from '../controllers/demo_gait.js';
-import { privilegedScan } from '../controllers/gait.js';
-import { maxAbsDiff } from '../controllers/linalg.js';
+import { DEMO_POLICY } from '../controllers/demo_gait.js';
 import { loadTraceIndex, loadTrace } from './traces.js';
 import { fetchAsset, setLocalAssets } from '../base.js';
 
 const traceGet = (path) => fetchAsset(`reference/traces/${path}`);
 const S = {
-  mj: null, sim: null, section: null, manifest: null, caseId: 'F', meta: {}, gait: null,
-  controller: null, policy: null, method: null, running: false, timeScale: 1, target: 3,
+  be: null, section: null, manifest: null, caseId: 'F', meta: {}, gait: null,
+  policy: null, method: null, running: false, timeScale: 1, target: 3,
   clock: 'fixed', schedule: null, decision: 0, ghost: null, ghostMethod: null, traces: null,
   x0: 0, stats: null, wallStart: 0, simStart: 0, maxTime: 12, lastFrame: 0, frictionScale: 1,
   ctrlDt: { fixed: 0.01, min: 0.002, max: 0.03 }, loopToken: 0,
@@ -37,15 +38,32 @@ async function fetchModel(section, spec) {
   return { kind: spec.kind, name: spec.file.split('/').pop(), data };
 }
 
+// The backend the page asked for, created once and reused. If the C++ module is
+// missing, the JavaScript backend runs instead and the self-test panel says so.
+async function selectBackend(kind) {
+  kind = backendKind(kind);
+  if (S.be?.kind === kind) return null;
+  S.be?.dispose();
+  S.be = null;
+  try {
+    S.be = await BACKENDS[kind].create();
+    return null;
+  } catch (e) {
+    if (kind === 'js') throw e;
+    S.be = await BACKENDS.js.create();
+    return `${e.message} Running the JavaScript backend instead.`;
+  }
+}
+
 // ---------------------------------------------------------------- init --------
-async function init({ section, caseId }) {
+async function init({ section, caseId, backend }) {
   stop();
   S.section = section;
   S.caseId = caseId ?? S.caseId;
-  post('status', { text: 'Loading MuJoCo WebAssembly…' });
-  if (!S.mj) S.mj = await loadMujoco();
-  S.sim?.dispose();
-  S.sim = null;
+  post('status', { text: backendKind(backend) === 'cpp' ? 'Loading the C++ backend (WebAssembly)…' : 'Loading MuJoCo WebAssembly…' });
+  const fallback = await selectBackend(backend);
+  const be = S.be;
+  S.policy = null;
   S.manifest = await fetchJSON(`${section}/manifest.json`);
   let modelSpec, metaPath;
   if (section === 'reference') {
@@ -62,14 +80,17 @@ async function init({ section, caseId }) {
   S.meta = metaPath ? (await fetchJSON(`${section}/${metaPath}`, true)) ?? {} : {};
   post('status', { text: 'Compiling model…' });
   const asset = await fetchModel(section, modelSpec);
-  const { model, via } = loadModel(S.mj, asset);
-  S.sim = new Sim(S.mj, model, S.meta);
-  const tests = [{ name: 'Model loader', ok: true, detail: via }];
-  tests.push(...S.sim.selfTest(section === 'reference'
+  const { selfTests } = be.load(asset, S.meta, section === 'reference'
     ? { dims: [9, 9, 6], euler: true, timestep: S.meta.timestep }
-    : { timestep: S.meta.timestep }));
+    : { timestep: S.meta.timestep });
+  be.setGait(S.gait);
+  const tests = [
+    { name: 'Backend', ok: !fallback, detail: `${be.name}, MuJoCo ${be.mujocoVersion}${fallback ? `. ${fallback}` : ''}` },
+    ...selfTests,
+  ];
   post('ready', {
     section, caseId: S.caseId,
+    backend: be.kind,
     selfTests: tests,
     profile: S.meta.profile ?? null,
     planes: S.meta.planes ?? [0],
@@ -78,19 +99,20 @@ async function init({ section, caseId }) {
     // Exported CT-RL policies first, then the built-in demo gait (ctrl only).
     policies: section === 'ctrl' ? [...(S.manifest.policies ?? []), DEMO_POLICY] : (S.manifest.policies ?? []),
     target: S.target,
-    timestep: S.sim.model.opt.timestep,
+    timestep: be.timestep,
   });
 }
 
 // --------------------------------------------------------------- reset --------
 async function reset({ method, clock, ghostMethod, initial }) {
   stop();
-  const sim = S.sim;
-  if (!sim) throw new BackendError('not-ready', 'Model is not loaded yet.');
+  const be = S.be;
+  if (!be?.loaded) throw new BackendError('not-ready', 'Model is not loaded yet.');
   S.method = method; S.clock = clock ?? S.clock; S.decision = 0;
   S.ghostMethod = ghostMethod ?? null;
   S.ghost = S.ghostMethod && S.traces
     ? await loadTrace(traceGet, S.traces, S.caseId, S.clock, S.ghostMethod) : null;
+  S.policy = null;
 
   // Initial state: first row of a recorded trace (reference) or model default (ctrl).
   if (S.section === 'reference') {
@@ -99,24 +121,23 @@ async function reset({ method, clock, ghostMethod, initial }) {
     if (initial === 'sample' || !src) {
       const sample = await fetchJSON(`reference/${S.manifest.cases[S.caseId].sample}`);
       const p = sample.pipeline_input;
-      sim.setState(p.state_backend_q, p.state_backend_v, p.previous_action);
+      be.setState(p.state_backend_q, p.state_backend_v, p.previous_action);
     } else {
       const row = src.row(0);
-      sim.setState(row.q, row.v, row.action);
+      be.setState(row.q, row.v, row.action);
     }
     // Row k+1's hold follows row k's state, so live decision k uses holds[k + 1].
     S.schedule = S.clock === 'irregular' && src ? src.holds.subarray(1) : null;
-    if (!S.gait) throw new BackendError('gait-missing',
+    if (!be.hasGait) throw new BackendError('gait-missing',
       'No gait.json for this case. Native controllers need the saved gait from final.pt (export_web_assets.py gait).');
-    S.controller = new NativeController(sim, S.gait, method);
-    S.policy = null;
+    be.useNative(method);
   } else {
     // dm_control randomizes the start pose; here every reset uses the model's qpos0.
-    S.mj.mj_resetData(sim.model, sim.data);
-    sim.forward(sim.data);
+    be.resetData();
     if (method === DEMO_POLICY.id) {
-      S.policy = new SineGait(sim.nu);
+      be.useSineGait();
     } else {
+      be.clearController();
       const entry = (S.manifest.policies ?? []).find((p) => p.id === method);
       if (!entry) throw new BackendError('policy-missing', `No exported policy "${method}" in ctrl/manifest.json.`);
       const meta = await fetchJSON(`ctrl/${entry.meta}`);
@@ -124,10 +145,11 @@ async function reset({ method, clock, ghostMethod, initial }) {
       if (!onnx.ok) throw new BackendError('asset-missing', `Missing assets/ctrl/${entry.onnx}.`);
       S.policy = await OnnxPolicy.create(new Uint8Array(await onnx.arrayBuffer()), meta);
     }
-    S.controller = null;
   }
-  S.x0 = sim.data.qpos[0];
+  S.x0 = be.qpos()[0];
   S.stats = { n: 0, time: 0, sqErr: 0, sat: 0, decMs: 0, reward: 0, falls: 0, plans: 0 };
+  S.lastAction = null;
+  S.lastDiag = null;
   frame(true);
 }
 
@@ -141,28 +163,29 @@ function holdFor(decision) {
   return S.ctrlDt.fixed;
 }
 
+const canStep = () => !!(S.be?.loaded && (S.be.hasController || S.policy));
+
 async function decide() {
-  const sim = S.sim, d = sim.data;
+  const be = S.be;
   const hold = holdFor(S.decision);
-  const substeps = Math.max(1, Math.round(hold / sim.model.opt.timestep));
+  const dt = be.timestep;
+  const substeps = Math.max(1, Math.round(hold / dt));
   let action, diag;
-  if (S.controller) {
-    const scan = privilegedScan(d.qpos[0], S.meta.profile ?? { x: [-1e3, 1e3], z: [0, 0] });
-    action = S.controller.act(scan, S.target, hold, d.time);
-    diag = S.controller.diagnostics;
-  } else {
-    action = await S.policy.act(d);
+  if (S.policy) {
+    action = await S.policy.act({ qpos: be.qpos(), qvel: be.qvel(), time: be.time });
     diag = S.policy.diagnostics;
+  } else {
+    ({ action, diag } = be.decide(S.target, hold));
   }
-  sim.stepHold(action, substeps);
-  const st = sim.torsoState(d);
-  const h = substeps * sim.model.opt.timestep;
+  be.stepHold(action, substeps);
+  const st = be.torso();
+  const h = substeps * dt;
   const s = S.stats;
   s.n++; s.time += h;
-  s.sqErr += h * (st.torsoLinvelX - S.target) ** 2;
+  s.sqErr += h * (st.linvelX - S.target) ** 2;
   s.sat += h * (diag.action_saturation ?? 0);
   s.decMs += diag.decision_ms ?? 0;
-  s.reward += h * Math.min(1, Math.max(0, st.torsoLinvelX / 10)); // dm_control cheetah-run reward rate
+  s.reward += h * Math.min(1, Math.max(0, st.linvelX / 10)); // dm_control cheetah-run reward rate
   if (diag.planned) s.plans++;
   S.decision++;
   S.lastAction = action;
@@ -173,32 +196,32 @@ function frame(force = false) {
   const now = performance.now();
   if (!force && now - S.lastFrame < 33) return;
   S.lastFrame = now;
-  const sim = S.sim, d = sim.data, st = sim.torsoState(d), s = S.stats;
+  const be = S.be, t = be.time, st = be.torso(), s = S.stats;
   let ghost = null, ghostX = null;
   if (S.ghost) {
-    const row = S.ghost.rowAt(S.ghost.t0 + d.time);
-    if (row) { ghost = sim.ghostSegments(row.q); ghostX = row.q[0]; }
+    const row = S.ghost.rowAt(S.ghost.t0 + t);
+    if (row) { ghost = be.ghostSegments(row.q); ghostX = row.q[0]; }
   }
   const wall = (now - S.wallStart) / 1000;
   post('frame', {
-    t: d.time,
-    segs: sim.segments(d),
+    t,
+    segs: be.segments(),
     ghost, ghostX,
-    torsoX: st.torsoPos[0],
-    speed: st.torsoLinvelX,
+    torsoX: st.x,
+    speed: st.linvelX,
     target: S.target,
     action: S.lastAction ? Array.from(S.lastAction) : null,
-    push: sim.pushActive() ? Array.from(d.xfrc_applied.slice(sim.torso * 6, sim.torso * 6 + 6)) : null,
+    push: be.pushActive() ? be.pushForce() : null,
     diag: pickDiag(S.lastDiag),
     stats: s && s.time > 0 ? {
       decisions: s.n,
-      distance: d.qpos[0] - S.x0,
+      distance: be.qpos()[0] - S.x0,
       speedRmse: Math.sqrt(s.sqErr / s.time),
       saturation: s.sat / s.time,
       decisionMs: s.decMs / s.n,
       reward: s.reward,
       plans: s.plans,
-      realtime: S.running && wall > 0 ? (d.time - S.simStart) / wall : null,
+      realtime: S.running && wall > 0 ? (t - S.simStart) / wall : null,
     } : null,
   });
 }
@@ -215,9 +238,9 @@ async function loop(token) {
     const budgetEnd = performance.now() + 20;
     const wallTarget = S.simStart + ((performance.now() - S.wallStart) / 1000) * S.timeScale;
     try {
-      while (S.sim.data.time < wallTarget && performance.now() < budgetEnd) {
+      while (S.be.time < wallTarget && performance.now() < budgetEnd) {
         await decide();
-        if (S.sim.data.time >= S.maxTime) { S.running = false; post('status', { text: `Episode ended at ${S.maxTime} s.` }); break; }
+        if (S.be.time >= S.maxTime) { S.running = false; post('status', { text: `Episode ended at ${S.maxTime} s.` }); break; }
       }
     } catch (e) { S.running = false; fail(e); }
     frame();
@@ -228,10 +251,10 @@ async function loop(token) {
 }
 
 function start() {
-  if (S.running || !S.sim || (!S.controller && !S.policy)) return;
+  if (S.running || !canStep()) return;
   S.running = true;
   S.wallStart = performance.now();
-  S.simStart = S.sim.data.time;
+  S.simStart = S.be.time;
   post('running', { running: true });
   loop(++S.loopToken);
 }
@@ -239,35 +262,16 @@ function start() {
 function stop() { S.running = false; S.loopToken++; }
 
 // --------------------------------------------------------- golden check -------
-// Replays validation/reference_samples/<clock>/<case>_transition.json:
-// 1) recorded action through the loaded model (model + stepping convention),
-// 2) acceleration target and fitted action (needs gait.json).
+// Replays validation/reference_samples/<clock>/<case>_transition.json in the
+// backend: the recorded action through the model, then (with gait.json) the
+// acceleration target and the fitted action.
 async function golden({ clock = 'fixed' }) {
   stop();
-  const sim = S.sim, mj = S.mj;
+  if (!S.be?.loaded) throw new BackendError('not-ready', 'Model is not loaded yet.');
   const path = S.manifest.cases[S.caseId].sample.replace(/^samples\/(fixed|irregular)/, `samples/${clock}`);
   const sample = await fetchJSON(`reference/${path}`);
-  const p = sample.pipeline_input, dec = sample.decision, rec = sample.received_transition;
-  const out = [];
-  sim.setState(p.state_backend_q, p.state_backend_v, p.previous_action);
-  const action = Float64Array.from(dec.action_normalized);
-  sim.stepHold(action, rec.physics_substeps);
-  out.push({ name: 'Transition replay q (max abs)', value: maxAbsDiff(sim.data.qpos, rec.q), tol: 1e-6 });
-  out.push({ name: 'Transition replay v (max abs)', value: maxAbsDiff(sim.data.qvel, rec.v), tol: 1e-4 });
-
-  if (S.gait) {
-    sim.setState(p.state_backend_q, p.state_backend_v, p.previous_action);
-    const ctl = new NativeController(sim, S.gait, dec.method === 'mujoco_mpc' ? 'mujoco_ls' : dec.method);
-    const d = sim.copyInto(sim.scratch[0], sim.data);
-    const fit = ctl.fit(d, p.scan, ctl.mean, dec.diagnostics.phase, p.target_speed_m_per_s, dec.method === 'mujoco_fd_ls', true);
-    out.push({ name: 'Acceleration target (max abs)', value: maxAbsDiff(fit.diagnostics.acceleration_target, dec.diagnostics.acceleration_target), tol: 1e-5 });
-    out.push({ name: `Fitted action, ${dec.method} (max abs)`, value: maxAbsDiff(fit.action, dec.action_normalized), tol: 1e-4 });
-    out.push({ name: 'Full-contact acceleration (max abs)', value: maxAbsDiff(fit.diagnostics.acceleration_full_contact, dec.diagnostics.acceleration_full_contact), tol: 1e-3 });
-  } else {
-    out.push({ name: 'Controller checks', value: null, tol: null, note: 'Skipped: export gait.json from final.pt first.' });
-  }
-  mj.mj_resetData(sim.model, sim.data);
-  post('golden', { caseId: S.caseId, clock, method: dec.method, results: out });
+  const results = S.be.golden(sample);
+  post('golden', { caseId: S.caseId, clock, method: sample.decision.method, results });
 }
 
 // ------------------------------------------------------------- messages -------
@@ -279,15 +283,15 @@ self.onmessage = async ({ data: msg }) => {
       case 'reset': await reset(msg); break;
       case 'start': start(); break;
       case 'pause': stop(); break;
-      case 'step': if (!S.running && (S.controller || S.policy)) { await decide(); frame(true); } break;
+      case 'step': if (!S.running && canStep()) { await decide(); frame(true); } break;
       case 'set':
         if (msg.target !== undefined) S.target = msg.target;
-        if (msg.timeScale !== undefined) { S.timeScale = msg.timeScale; S.wallStart = performance.now(); S.simStart = S.sim?.data.time ?? 0; }
+        if (msg.timeScale !== undefined) { S.timeScale = msg.timeScale; S.wallStart = performance.now(); S.simStart = S.be?.loaded ? S.be.time : 0; }
         if (msg.maxTime !== undefined) S.maxTime = msg.maxTime;
         if (msg.ctrlDt) Object.assign(S.ctrlDt, msg.ctrlDt);
-        if (msg.friction !== undefined && S.sim) { S.frictionScale = msg.friction; S.sim.setFrictionScale(msg.friction); }
+        if (msg.friction !== undefined && S.be?.loaded) { S.frictionScale = msg.friction; S.be.setFrictionScale(msg.friction); }
         break;
-      case 'push': S.sim?.push(msg.fx, msg.fz, msg.ty, msg.duration); frame(true); break;
+      case 'push': if (S.be?.loaded) { S.be.push(msg.fx, msg.fz, msg.ty, msg.duration); frame(true); } break;
       case 'golden': await golden(msg); break;
       default: throw new Error(`Unknown message ${msg.type}`);
     }

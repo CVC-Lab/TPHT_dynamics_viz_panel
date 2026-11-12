@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cvcpkg/recipes/tpht-viz-panel/build.sh — assemble the static site into
-# share/tpht-viz-panel/ with tools/build_site.py, taking MuJoCo's wasm build and
-# ONNX Runtime Web from the prefix (see recipe.yaml for the install commands).
+# share/tpht-viz-panel/ with tools/build_site.py, taking the C++ backend's wasm module,
+# MuJoCo's wasm build and ONNX Runtime Web from the prefix (see recipe.yaml).
 set -euo pipefail
 
 : "${CVC_SOURCE_DIR:?CVC_SOURCE_DIR must be set}"
@@ -30,7 +30,7 @@ done
   --with-tests \
   "${PREFIXES[@]}"
 
-for f in index.html vendor/mujoco/mujoco.wasm vendor/ort/ort-wasm-simd-threaded.wasm tests/index.html; do
+for f in index.html vendor/tpht/tpht_backend.wasm vendor/mujoco/mujoco.wasm vendor/ort/ort-wasm-simd-threaded.wasm tests/index.html; do
   [ -f "${CVC_INSTALL_DIR}/share/tpht-viz-panel/${f}" ] || { echo "tpht-viz-panel: ${f} missing from the site" >&2; exit 1; }
 done
 echo "cvcpkg: installed the TPHT viz panel site -> ${CVC_INSTALL_DIR}/share/tpht-viz-panel"

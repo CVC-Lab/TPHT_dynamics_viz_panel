@@ -17,7 +17,7 @@ recipe:
     TPHT benchmark bundle (`tpht-lab export`). Built from this repository with the prefix's own
     CPython; nothing is downloaded.
 
-# From the repository root, after `cvcpkg install python312 numpy-cp312 mujoco-core-cp312
+# From the repository root, after `cvcpkg install python312 numpy-cp312 mujoco3-cp312
 # setuptools-cp312 --prefix deps`:
 #   cvcpkg build tpht-lab-cp312 --local --recipes-dir cvcpkg/recipes --prefix deps --build-prefix deps
 # then run deps/bin/tpht-lab (deps\Scripts\tpht-lab.exe on Windows).
@@ -41,7 +41,9 @@ depends:
   runtime:
     - name: python312
     - name: numpy-cp312
-    - name: mujoco-core-cp312
+    # MuJoCo 3.17.0's bindings, the same release as the site (see cvcpkg/recipes/tpht-backend).
+    - name: mujoco3-cp312
+      version: "==3.17.0"
   host_tools:
     - python312
 

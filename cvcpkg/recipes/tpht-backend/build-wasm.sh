@@ -29,7 +29,7 @@ cmake --install "${CVC_BUILD_DIR}"
 _lic="${CVC_INSTALL_DIR}/share/licenses/tpht-backend"
 mkdir -p "${_lic}"
 cp "${CVC_SOURCE_DIR}/LICENSE" "${_lic}/LICENSE"
-for _pkg in mujoco nlohmann-json; do
+for _pkg in mujoco3 mujoco nlohmann-json; do
     for _p in "${CVC_DEPS_PREFIX:-}" "${CVC_BUILD_PREFIX:-}"; do
         if [ -n "${_p}" ] && [ -d "${_p}/share/licenses/${_pkg}" ]; then
             mkdir -p "${_lic}/${_pkg}"

@@ -1,8 +1,9 @@
 # Builds the static site from the repository's cvcpkg recipes, tests it, and publishes it to
 # GitHub Pages; builds and tests the C++ backend natively. No node, npm or bundler: every
 # third-party piece comes from cvcpkg.
-#   - MuJoCo 4.0 (wasm32 static, and native), emsdk, cmake, ninja, nlohmann-json, googletest,
-#     CPython 3.12 + numpy + MuJoCo's Python package: the cvcpkg.org catalog.
+#   - MuJoCo 3.17.0 (mujoco3: wasm32 static, and native), emsdk, cmake, ninja, nlohmann-json,
+#     googletest, CPython 3.12 + numpy + MuJoCo 3.17.0's Python package (mujoco3-cp312): the
+#     cvcpkg.org catalog. 3.17.0 because the team's models were trained on it.
 #   - The C++ backend (wasm and native), ONNX Runtime Web, the site and the tpht-lab host:
 #     cvcpkg/recipes/ in this repository.
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
@@ -49,9 +50,9 @@ jobs:
       - name: Install runtimes and tools from the cvcpkg catalog
         run: |
           set -euo pipefail
-          cvcpkg install python312 numpy-cp312 mujoco-core-cp312 setuptools-cp312 \
+          cvcpkg install python312 numpy-cp312 mujoco3-cp312 setuptools-cp312 \
             nlohmann-json cmake ninja playwright-chromium-headless-shell --prefix "$PREFIX"
-          cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix "$PREFIX"
+          cvcpkg install mujoco3 --platform wasm --arch wasm32 --link static --prefix "$PREFIX"
           cvcpkg install emsdk --prefix "$EMSDK_PREFIX"
 
       - name: Build the C++ backend for the browser (wasm32)
@@ -127,11 +128,10 @@ jobs:
           set -euo pipefail
           DEPS="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/tpht-native"
           echo "DEPS=$DEPS" >> "$GITHUB_ENV"
-          # Windows: cvcpkg runs build.ps1 with pwsh 7. Linux: MuJoCo's CMake package calls
-          # find_dependency(OpenGL), and the runner has no GL libraries; libglvnd provides them.
-          extra="libglvnd"
+          # Windows: cvcpkg runs build.ps1 with pwsh 7.
+          extra=""
           [ "$RUNNER_OS" = Windows ] && extra="powershell"
-          cvcpkg install mujoco cmake ninja nlohmann-json googletest $extra --prefix "$DEPS"
+          cvcpkg install mujoco3 cmake ninja nlohmann-json googletest $extra --prefix "$DEPS"
           cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
             --prefix "$DEPS" --build-prefix "$DEPS"
 

@@ -15,9 +15,9 @@ Live numbers are for debugging. Benchmark results come from the Python pipeline;
 Everything comes from [cvcpkg](https://cvcpkg.org) packages. There is no node, npm or bundler: the app is plain ES modules.
 
 - **From the cvcpkg.org catalog:**
-  - MuJoCo 4.0, as its wasm32 static build and natively;
+  - MuJoCo 3.17.0 (`mujoco3`), as its wasm32 static build and natively;
   - the C++ toolchain pieces: emsdk 5.0.7 (Emscripten), cmake, ninja, nlohmann-json and googletest;
-  - CPython 3.12, numpy and MuJoCo's Python package;
+  - CPython 3.12, numpy and MuJoCo 3.17.0's Python package (`mujoco3-cp312`);
   - a headless Chromium for the tests.
 - **From this repository's recipes (`cvcpkg/recipes/`):**
   - `tpht-backend`: the C++ core, built as the page's WebAssembly module and natively as `tpht-sim`;
@@ -26,6 +26,13 @@ Everything comes from [cvcpkg](https://cvcpkg.org) packages. There is no node, n
   - `tpht-lab-cp312`: the native host.
 
 Emscripten's `emcc` runs the node that ships inside cvcpkg's emsdk package for some of its own link steps. Nothing here installs node or npm, or runs a JavaScript package manager.
+
+**MuJoCo 3.17.0.** The page, `tpht-lab` and `tpht-sim` run MuJoCo 3.17.0, the last 3.x release, because the team's models and policies were trained on it: an `.mjb` only loads in the version that wrote it, and a policy is safest on the engine it was trained on. cvcpkg packages it as `mujoco3` (the C library, native and wasm) and `mujoco3-cp312` (the Python bindings). `cvcpkg install mujoco` gives MuJoCo 4, and the two cannot share a prefix. The C API the backend uses is the same in 4.0.0, so moving to MuJoCo 4 later is a package swap:
+
+- install `mujoco` and `mujoco-core-cp312` in place of `mujoco3` and `mujoco3-cp312`, here, in the recipes' `depends` and in the workflow;
+- set `TPHT_MUJOCO_VERSION` to 4.0.0: its default in `cpp/CMakeLists.txt`, or `-DTPHT_MUJOCO_VERSION=4.0.0` for a one-off build. CMake matches the version exactly. Then change the `mujoco==3.17.0` pin in `pyproject.toml`.
+
+The tests' version-dependent values are in `tests/fixtures/mujoco_reference.json`, which has both versions. `tools/mujoco_reference.py --write` adds the values for whatever `import mujoco` it runs with.
 
 ### 1. Install the cvcpkg CLI
 
@@ -50,8 +57,8 @@ The steps below run `cvcpkg` from `PATH`. The Windows installer adds the directo
 Run this from the repository root. Any directory works as a prefix; `deps*` is git-ignored.
 
 ```bash
-cvcpkg install python312 numpy-cp312 mujoco-core-cp312 setuptools-cp312 nlohmann-json cmake ninja --prefix deps
-cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix deps
+cvcpkg install python312 numpy-cp312 mujoco3-cp312 setuptools-cp312 nlohmann-json cmake ninja --prefix deps
+cvcpkg install mujoco3 --platform wasm --arch wasm32 --link static --prefix deps
 cvcpkg install emsdk --prefix deps-emsdk
 ```
 
@@ -148,14 +155,14 @@ The page keeps the JavaScript port behind the same interface (`src/backend/backe
 
 ### Native build and `tpht-sim`
 
-The native MuJoCo goes in a prefix of its own, because the native and wasm `mujoco` bundles both install `lib/cmake/mujoco`:
+The native MuJoCo goes in a prefix of its own, because the native and wasm `mujoco3` bundles both install `lib/cmake/mujoco`:
 
 ```bash
-cvcpkg install mujoco cmake ninja nlohmann-json googletest --prefix deps-native
+cvcpkg install mujoco3 cmake ninja nlohmann-json googletest --prefix deps-native
 cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes --prefix deps-native --build-prefix deps-native
 ```
 
-On Linux, add `libglvnd` to the install line: MuJoCo's CMake package looks for OpenGL, and a server or CI image may have none. On Windows, add `powershell`. The recipe runs the googletest suite before it installs anything. Then:
+On Windows, add `powershell`. The recipe runs the googletest suite before it installs anything. Then:
 
 ```bash
 deps-native/bin/tpht-sim check --assets public/assets          # binding self-tests on every model
@@ -177,7 +184,7 @@ On Windows, run these from a Visual Studio x64 developer prompt, with `deps-nati
 
 ### How the backends were checked against each other
 
-- **Native C++ against MuJoCo's Python package.** The C++ demo-gait rollout moves 5.134876807099926 m in 5 s. The same rollout through `import mujoco` (4.0.0) moves the same distance to 1e-15, when it steps as the page does: float32 controls, `mj_step2` then `mj_step1`.
+- **Native C++ against MuJoCo's Python package.** On MuJoCo 3.17.0 the C++ demo-gait rollout moves 5.134876807100106 m in 5 s. The same rollout through `import mujoco` 3.17.0 (`tools/mujoco_reference.py`) gives the same number to every printed digit, when it steps as the page does: float32 controls, `mj_step2` then `mj_step1`. On 4.0.0 both gave 5.134876807099926 m, so the two releases differ by 1.8e-13 m on this model.
 - **C++ WebAssembly against the JavaScript port.** In the browser test page, both run 60 decisions of `mujoco_ls` and of `mujoco_fd_ls`, and 25 of `mujoco_mpc`, on the cheetah with `tests/fixtures/cheetah_gait.json`. Their actions are identical, with a difference of exactly 0, and so is the demo gait.
 - **The numerics against SciPy and the Python formulas.** The scipy BVLS cases and the gait cases in `tests/fixtures/` pass natively (googletest) at the same tolerances as in the browser.
 - **The MPC noise.** The seeded generator matches an independent Python port: exactly for the uniforms, and to 1e-15 for the normals, in both backends.
@@ -190,7 +197,7 @@ Four problems stopped the page. All were in `src/backend/mujoco_env.js`:
 
 - **The mass-matrix buffer accessor.** The code called `buf.getView()`, but the Embind accessor is `GetView()`. It also built buffers with `new DoubleBuffer(array)`, but the constructor takes a length: `new DoubleBuffer(n)`, or `DoubleBuffer.FromArray`. The `mj_mulM` fallback also allocated n×n for an n-vector. So every mass-matrix path threw, which took down the mass-matrix self-test and every reference controller, since all of them need M.
 - **The binary loaders.** `MjModel.from_binary_path` and `MjModel.mj_loadModel` take a virtual file system as their second argument (`mujoco.d.ts`). Without it they throw. `mj_loadModel` was also being called on the module instead of on `MjModel`.
-- **Binary models are version-locked.** An `.mjb` only loads in the MuJoCo version that wrote it. The site now runs cvcpkg's MuJoCo 4.0.0, and the benchmark's `.mjb` files come from 3.17. `tpht-lab export ref-model` now writes flattened XML when the bundle has `*_transition.xml`, and XML loads in any version.
+- **Binary models are version-locked.** An `.mjb` only loads in the MuJoCo version that wrote it. The benchmark's `.mjb` files come from MuJoCo 3.17, which is the version the site runs (cvcpkg's `mujoco3`). `tpht-lab export ref-model` also writes flattened XML when the bundle has `*_transition.xml`, and XML loads in any version.
 - **Absolute paths.** `index.html` loaded `/src/...` absolutely, which breaks a Pages project site. Paths are now relative to `src/base.js`, so the same build works at any base path.
 
 The CT-RL tab had no model to load. It now ships dm_control 1.0.51's public cheetah: Apache-2.0, fetched by `tpht-lab export ctrl-model` from the dm_control repository at a pinned tag, with each file sha256-checked.
@@ -245,9 +252,9 @@ You can run the exporter two ways:
 - **From a checkout:** `deps/bin/python3 tools/export_web_assets.py <step>`, which writes into the checkout's `public/assets`.
 
 ```bash
-# MuJoCo (cvcpkg's, 4.0): models + ids + ground profile (via mj_ray).
-# Writes flattened XML when the bundle has models/*_transition.xml (recommended: loads in any
-# MuJoCo version); an .mjb only loads in the version that wrote it, and 4.0 cannot read 3.17's.
+# MuJoCo (cvcpkg's mujoco3-cp312, 3.17.0): models + ids + ground profile (via mj_ray).
+# Writes flattened XML when the bundle has models/*_transition.xml (loads in any MuJoCo
+# version); an .mjb only loads in the version that wrote it (the benchmark's are 3.17's).
 tpht-lab export ref-model --bundle $B
 
 # Bundle code + torch (the benchmark's own environment): saved gait, joint limits, CEM bounds
@@ -294,11 +301,11 @@ deps/bin/python3 tools/make_test_fixtures.py
 | `gait.js` references and target vs NumPy transcription | 200 cases, below 1e-10; passes in the browser test page |
 | Binary traces | Round-trip test passes; recorded panel matches `report.md` |
 | MuJoCo WASM calls (CT-RL tab, dm_control cheetah) | All self-tests pass in the page, in both backends; `tpht-lab check` and `tpht-sim check` match natively (force balance 2.07e-16) |
-| C++ core, native, vs MuJoCo's Python package | Demo gait identical to 1e-15 (5 s); 14 googletest tests, including the SciPy BVLS and gait fixtures |
+| C++ core, native, vs MuJoCo's Python package | Demo gait identical to every printed digit (5 s, MuJoCo 3.17.0; also on 4.0.0); 14 googletest tests, including the SciPy BVLS and gait fixtures |
 | C++ WebAssembly vs the JavaScript port | Identical actions for `mujoco_ls`, `mujoco_fd_ls` and `mujoco_mpc` on the cheetah (difference exactly 0), and identical demo gait; in the browser test page |
-| Demo gait in the page vs native | Same distance at 12 s (14.70 m natively; the page takes one decision more and shows 14.72 m) |
-| cvcpkg build (catalog deps + the four recipes, wasm and native), `tpht-lab check`/`test` | Checked on Windows x86_64; the workflow runs the site on Ubuntu and the native build on Ubuntu and Windows |
-| Reference tab with the benchmark models | Not run: the models are not in the repository (`.mjb` from MuJoCo 3.17 will not load in 4.0; export XML) |
+| Demo gait in the page vs native | Same distance at 12 s (14.70 m natively on 3.17.0 and on 4.0.0; on 4.0.0 the page took one decision more and showed 14.72 m) |
+| cvcpkg build (catalog deps + the four recipes, wasm and native), `tpht-lab check`/`test` | Checked on Windows x86_64 with MuJoCo 3.17.0 (and earlier 4.0.0); the workflow runs the site on Ubuntu and the native build on Ubuntu and Windows |
+| Reference tab with the benchmark models | Not run: the models are not in the repository (they are MuJoCo 3.17 `.mjb` files, the site's version) |
 | ONNX policies | Not run: no exported policy yet |
 
 ## Known differences from the Python benchmark
@@ -308,7 +315,6 @@ deps/bin/python3 tools/make_test_fixtures.py
 - **Pushes and friction changes are seen immediately by native controllers.** They read MuJoCo's current state and model, consistent with their "privileged" label.
 - **Case J.** J draws its course per episode, so the J model in `reference_samples` may not be the course of the J traces. The ghost can drift from the terrain.
 - **CT-RL clock and start pose.** The irregular clock draws holds uniformly in [2, 30] ms; the CT-RL time-grid generator is not ported. Episodes start from the model default pose rather than dm_control's randomized one.
-- **MuJoCo version.** The benchmark ran MuJoCo 3.17; the page and `tpht-lab` run 4.0.0. Compare live numbers with that in mind.
 
 ## Explainers (archify)
 

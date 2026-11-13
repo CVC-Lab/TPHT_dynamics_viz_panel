@@ -13,7 +13,7 @@ Invoke-CvcWasmCMakeBuild -SourceDir (Join-Path $env:CVC_SOURCE_DIR 'cpp') -Extra
 $lic = Join-Path $env:CVC_INSTALL_DIR 'share\licenses\tpht-backend'
 New-Item -ItemType Directory -Force -Path $lic | Out-Null
 Copy-Item (Join-Path $env:CVC_SOURCE_DIR 'LICENSE') (Join-Path $lic 'LICENSE')
-foreach ($pkg in 'mujoco', 'nlohmann-json') {
+foreach ($pkg in 'mujoco3', 'mujoco', 'nlohmann-json') {
     foreach ($p in @($env:CVC_DEPS_PREFIX, $env:CVC_BUILD_PREFIX) | Where-Object { $_ }) {
         $from = Join-Path $p "share\licenses\$pkg"
         if (Test-Path $from) {

@@ -11,7 +11,7 @@ recipe:
   license: "GPL-3.0-only AND Apache-2.0 AND MIT"
   tags: [robotics, physics, mujoco, wasm, simulation, control]
   description: >-
-    The TPHT panel's C++ backend (cpp/ in this repository): MuJoCo 4.0's C API plus the
+    The TPHT panel's C++ backend (cpp/ in this repository): MuJoCo 3.17's C API plus the
     reference controllers of the cheetah benchmark (mujoco_ls, mujoco_fd_ls, CEM mujoco_mpc,
     bounded least squares, gait references) and the CT-RL demo gait. Natively it installs
     libtpht_core, its headers and the tpht-sim tool (check, run, golden on the site's
@@ -19,16 +19,20 @@ recipe:
     single-threaded Embind module that the page's worker runs (tools/build_site.py copies
     it to vendor/tpht/).
 
+# MuJoCo is cvcpkg's mujoco3 (3.17.0), the release the team's models and policies were
+# trained on; cpp/CMakeLists.txt finds exactly TPHT_MUJOCO_VERSION. Moving to MuJoCo 4 is
+# `mujoco` in place of `mujoco3` here and TPHT_MUJOCO_VERSION 4.0.0 in cpp/CMakeLists.txt.
+#
 # Build from the repository root. Native (deps in their own prefix: the native and wasm
-# mujoco bundles both install lib/cmake/mujoco):
-#   cvcpkg install mujoco cmake ninja nlohmann-json googletest --prefix deps-native
-#   (Linux: add libglvnd; Windows: add powershell)
+# mujoco3 bundles both install lib/cmake/mujoco):
+#   cvcpkg install mujoco3 cmake ninja nlohmann-json googletest --prefix deps-native
+#   (Windows: add powershell)
 #   cvcpkg build tpht-backend --local --recipes-dir cvcpkg/recipes \
 #     --prefix deps-native --build-prefix deps-native
 # Wasm (into the site prefix, which holds the wasm32 mujoco; emsdk in a prefix of its own,
 # because emsdk's activation drops every PATH entry under its root, cmake and ninja included):
 #   cvcpkg install emsdk --prefix deps-emsdk
-#   cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix deps
+#   cvcpkg install mujoco3 --platform wasm --arch wasm32 --link static --prefix deps
 #   cvcpkg install nlohmann-json cmake ninja --prefix deps
 #   CVC_EMSDK_DIR=$PWD/deps-emsdk PATH=$PWD/deps/bin:$PATH \
 #     cvcpkg build tpht-backend --platform wasm --local \
@@ -49,16 +53,15 @@ depends:
   build:
     - cmake
     - ninja
-    - mujoco
+    - name: mujoco3
+      version: "==3.17.0"
     - nlohmann-json
     - name: googletest
       platforms: [linux, macos, windows]
-    # MuJoCo's CMake package config calls find_dependency(OpenGL); Linux hosts may have no GL.
-    - name: libglvnd
-      platforms: [linux]
   runtime:
     # tpht-sim links libmujoco dynamically; the wasm module has MuJoCo inside it.
-    - name: mujoco
+    - name: mujoco3
+      version: "==3.17.0"
       platforms: [linux, macos, windows]
   host_tools: []
 

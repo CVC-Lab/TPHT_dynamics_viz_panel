@@ -4,8 +4,8 @@
 // thigh/shin/foot), the front leg a quarter cycle behind the back leg. It
 // reads only the simulation time.
 //
-// Parameters from a native sweep on the dm_control cheetah (MuJoCo 4.0,
-// 12 s, default start pose): about 14.7 m forward (1.2 m/s) with torso pitch
+// Parameters from a native sweep on the dm_control cheetah (MuJoCo 4.0, the same
+// on 3.17; 12 s, default start pose): about 14.7 m forward (1.2 m/s) with torso pitch
 // within 0.3 rad. A half-cycle offset at amplitude 0.8 flips the robot.
 // tpht_lab/check.py rolls out the same formula natively.
 

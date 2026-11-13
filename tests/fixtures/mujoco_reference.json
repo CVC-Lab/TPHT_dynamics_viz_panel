@@ -1,0 +1,7 @@
+{
+  "comment": "Reference values that depend on the MuJoCo release, keyed by mj_versionString(). Read by cpp/tests/sim_test.cpp and tests/backend.test.js. demo_dx_5s: how far qpos[0] of dm_control's cheetah (public/assets/ctrl) moves in 500 steps of the demo sine gait, through `import mujoco` of that version stepping as the page does (from a forwarded mj_resetData: d.ctrl[:] = float32(sine_gait(nu, d.time)); mj_step2; mj_step1). tools/mujoco_reference.py computes it.",
+  "demo_dx_5s": {
+    "3.17.0": 5.134876807100106,
+    "4.0.0": 5.134876807099926
+  }
+}

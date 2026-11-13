@@ -10,8 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
-# cvcpkg's mujoco-core-cp312 provides `import mujoco` (PyPI's mujoco 4.x is a metapackage over mujoco-core).
-dependencies = ["numpy", "mujoco-core>=4.0"]
+# MuJoCo 3.17.0, the release the site runs (cvcpkg's mujoco3-cp312 provides `import mujoco`).
+dependencies = ["numpy", "mujoco==3.17.0"]
 
 [project.optional-dependencies]
 # Only for `tpht-lab export gait|ctrl-policy` (the benchmark bundle's own environment).

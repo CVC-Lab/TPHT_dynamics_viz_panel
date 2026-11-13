@@ -21,8 +21,21 @@ async function cheetah(Backend) {
 
 const maxDiff = (a, b) => a.reduce((s, x, i) => Math.max(s, Math.abs(x - b[i])), 0);
 
-// Python, MuJoCo 4.0.0, stepping as the page does (see cpp/tests/sim_test.cpp).
-const PYTHON_DEMO_DX_5S = 5.134876807099926;
+// Values that depend on the MuJoCo release, keyed by version (shared with
+// cpp/tests/sim_test.cpp). demo_dx_5s: the demo-gait rollout through the MuJoCo
+// Python package of that version, stepping as the page does.
+async function mujocoReference(key, version) {
+  const ref = await fixture('mujoco_reference.json');
+  const v = ref[key][version];
+  if (typeof v !== 'number') throw new Error(`fixtures/mujoco_reference.json has no ${key} for MuJoCo ${version}`);
+  return v;
+}
+
+// The MuJoCo release the site was built with (tools/build_site.py writes it),
+// or null when the tests run outside a built site.
+async function siteMujocoVersion() {
+  try { return (await loadJSON(new URL('../build-info.json', import.meta.url))).mujoco ?? null; } catch { return null; }
+}
 
 function demoRollout(be, steps) {
   be.resetData();
@@ -34,22 +47,27 @@ function demoRollout(be, steps) {
 
 test('C++ and JavaScript backends load the cheetah; every binding self-test passes', async () => {
   const notes = [];
+  const site = await siteMujocoVersion();
+  const versions = new Set();
   for (const Backend of [CppBackend, JsBackend]) {
     const { be, loaded } = await cheetah(Backend);
     for (const t of loaded.selfTests) assert.ok(t.ok, `${be.name}: ${t.name}: ${t.detail}`);
-    assert.equal(be.mujocoVersion, '4.0.0', `${be.name} runs MuJoCo ${be.mujocoVersion}`);
+    if (site) assert.equal(be.mujocoVersion, site, `${be.name} runs MuJoCo ${be.mujocoVersion}, the site was built with ${site}`);
+    versions.add(be.mujocoVersion);
     notes.push(`${be.kind}: ${loaded.selfTests.length} pass via ${loaded.via}`);
     be.dispose();
   }
-  return notes.join('; ');
+  assert.equal(versions.size, 1, `the backends run different MuJoCo versions: ${[...versions].join(', ')}`);
+  return `MuJoCo ${[...versions][0]}; ${notes.join('; ')}`;
 });
 
 test('demo gait, 5 s: C++ = native Python; JavaScript port within 1e-6', async () => {
   const { be: cpp } = await cheetah(CppBackend);
   const { be: js } = await cheetah(JsBackend);
+  const python = await mujocoReference('demo_dx_5s', cpp.mujocoVersion);
   const dc = demoRollout(cpp, 500), dj = demoRollout(js, 500);
   cpp.dispose(); js.dispose();
-  assert.ok(Math.abs(dc - PYTHON_DEMO_DX_5S) < 1e-9, `C++ moved ${dc} m, Python ${PYTHON_DEMO_DX_5S} m`);
+  assert.ok(Math.abs(dc - python) < 1e-9, `C++ moved ${dc} m, Python ${python} m`);
   assert.ok(Math.abs(dj - dc) < 1e-6, `JavaScript moved ${dj} m, C++ ${dc} m`);
   return `C++ ${dc.toFixed(12)} m, JavaScript ${dj.toFixed(12)} m, |diff| ${Math.abs(dj - dc).toExponential(1)}`;
 });

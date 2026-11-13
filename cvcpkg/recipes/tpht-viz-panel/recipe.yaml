@@ -12,12 +12,12 @@ recipe:
     The TPHT dynamics viz panel (cheetah baseline lab) as a finished static site in
     share/tpht-viz-panel/: the page's ES modules, the exported assets, the in-browser test page,
     and in vendor/ the C++ backend's wasm module (tpht-backend, the default backend), MuJoCo
-    4.0's WebAssembly build (from cvcpkg's wasm mujoco, Apache-2.0, for the JavaScript port)
+    3.17's WebAssembly build (from cvcpkg's wasm mujoco3, Apache-2.0, for the JavaScript port)
     and ONNX Runtime Web's wasm build (onnxruntime-web, MIT). No bundler, node or npm. Serve
     the directory from any static host (GitHub Pages) or with `tpht-lab serve` (tpht-lab-cp312).
 
 # Build from the repository root, after putting the three runtimes into one prefix:
-#   cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix deps
+#   cvcpkg install mujoco3 --platform wasm --arch wasm32 --link static --prefix deps
 #   (build tpht-backend for wasm into deps: see cvcpkg/recipes/tpht-backend/recipe.yaml)
 #   cvcpkg build onnxruntime-web --platform any --local --recipes-dir cvcpkg/recipes \
 #     --prefix deps --build-prefix deps

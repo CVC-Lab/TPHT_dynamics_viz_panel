@@ -37,6 +37,15 @@ tpht::Backend load_cheetah() {
 // runs the same file through both browser backends.
 std::string cheetah_gait_json() { return read("tests/fixtures/cheetah_gait.json"); }
 
+// Values that depend on the MuJoCo release, keyed by version (also read by
+// tests/backend.test.js).
+double mujoco_reference(const std::string& key) {
+  const json ref = json::parse(read("tests/fixtures/mujoco_reference.json"));
+  const std::string v = tpht::Backend::mujoco_version();
+  if (!ref.at(key).contains(v)) throw std::runtime_error("no " + key + " for MuJoCo " + v);
+  return ref.at(key).at(v).get<double>();
+}
+
 }  // namespace
 
 TEST(Sim, CheetahSelfTestsPass) {
@@ -48,7 +57,7 @@ TEST(Sim, CheetahSelfTestsPass) {
   ASSERT_GE(r.self_tests.size(), 5u);
   for (const auto& t : r.self_tests) EXPECT_TRUE(t.ok) << t.name << ": " << t.detail;
   EXPECT_EQ(r.via, "mj_loadXML (VFS)");
-  EXPECT_EQ(tpht::Backend::mujoco_version(), "4.0.0");
+  EXPECT_EQ(tpht::Backend::mujoco_version(), TPHT_MUJOCO_VERSION);
 }
 
 TEST(Sim, BadModelsFailWithCodes) {
@@ -67,12 +76,12 @@ TEST(Sim, BadModelsFailWithCodes) {
   }
 }
 
-// The same rollout with MuJoCo 4.0.0's Python package, stepping as the page does
-// (float32 controls, mj_step2 then mj_step1 from a forwarded reset):
+// The same rollout with the MuJoCo Python package of the same version, stepping
+// as the page does (float32 controls, mj_step2 then mj_step1 from a forwarded
+// reset):
 //   d.ctrl[:] = float32(sine_gait(nu, d.time)); mj_step2; mj_step1   (500 times)
-// moves qpos[0] by 5.134876807099926 m (Windows, 2026-11-11). mj_step with
-// float64 controls gives 5.134877217259325; tpht_lab/check.py reports the
-// torso's xpos instead (+5.12 m).
+// The distance qpos[0] moves is in tests/fixtures/mujoco_reference.json
+// ("demo_dx_5s"), per version. tpht_lab/check.py reports the torso's xpos instead.
 TEST(Sim, DemoGaitMatchesTheNativePythonRollout) {
   tpht::Backend b = load_cheetah();
   b.reset_data();
@@ -86,7 +95,7 @@ TEST(Sim, DemoGaitMatchesTheNativePythonRollout) {
     max_pitch = std::max(max_pitch, std::abs(s.data()->qpos[2]));
   }
   EXPECT_NEAR(s.data()->time, 5.0, 1e-9);
-  EXPECT_NEAR(s.data()->qpos[0] - x0, 5.134876807099926, 1e-9);
+  EXPECT_NEAR(s.data()->qpos[0] - x0, mujoco_reference("demo_dx_5s"), 1e-9);
   EXPECT_LT(max_pitch, 0.3);
 }
 

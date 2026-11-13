@@ -6,8 +6,9 @@ loads as they are, and its compiled parts come from cvcpkg packages:
 
   tpht-backend     (wasm)   share/tpht-backend/wasm/tpht_backend.{js,wasm} -> vendor/tpht/
                             this repository's C++ core (cpp/), the default backend
-  mujoco           (wasm)   share/mujoco/wasm/mujoco.{js,wasm}       -> vendor/mujoco/
-                            MuJoCo's Embind build, for the JavaScript port
+  mujoco3          (wasm)   share/mujoco/wasm/mujoco.{js,wasm}       -> vendor/mujoco/
+                            MuJoCo 3.17's Embind build, for the JavaScript port
+                            (cvcpkg's `mujoco`, MuJoCo 4, installs the same files)
   onnxruntime-web  (noarch) share/onnxruntime-web/ort.wasm.min.mjs  -> vendor/ort/
                             + ort-wasm-simd-threaded.{mjs,wasm}
 
@@ -78,17 +79,19 @@ def vendor_mujoco(prefixes: list[Path], out: Path) -> str | None:
     prefix = find_prefix(prefixes, 'share/mujoco/wasm', MUJOCO_FILES)
     if prefix is None:
         fail(f'no prefix in {[str(p) for p in prefixes]} has share/mujoco/wasm/mujoco.{{js,wasm}}: '
-             "install the wasm build of cvcpkg's mujoco "
-             '(cvcpkg install mujoco --platform wasm --arch wasm32 --link static --prefix ...)')
+             "install the wasm build of cvcpkg's mujoco3 "
+             '(cvcpkg install mujoco3 --platform wasm --arch wasm32 --link static --prefix ...)')
     src = prefix / 'share' / 'mujoco' / 'wasm'
     dst = out / 'vendor' / 'mujoco'
     dst.mkdir(parents=True, exist_ok=True)
     for f in MUJOCO_FILES + ('mujoco.d.ts',):
         if (src / f).is_file():
             shutil.copy2(src / f, dst / f)
-    lic = prefix / 'share' / 'licenses' / 'mujoco'
-    if lic.is_dir():
-        copy_tree(lic, dst / 'LICENSES')
+    for pkg in ('mujoco3', 'mujoco'):
+        lic = prefix / 'share' / 'licenses' / pkg
+        if lic.is_dir():
+            copy_tree(lic, dst / 'LICENSES')
+            break
     return read_version_cmake(prefix / 'lib' / 'cmake' / 'mujoco' / 'mujocoConfigVersion.cmake')
 
 
@@ -105,7 +108,7 @@ def vendor_tpht(prefixes: list[Path], out: Path) -> str | None:
     for f in TPHT_FILES:
         shutil.copy2(src / f, dst / f)
     # The module links MuJoCo (Apache-2.0) and nlohmann-json (MIT) statically.
-    for pkg in ('mujoco', 'nlohmann-json'):
+    for pkg in ('mujoco3', 'mujoco', 'nlohmann-json'):
         for p in prefixes:
             lic = p / 'share' / 'licenses' / pkg
             if lic.is_dir():

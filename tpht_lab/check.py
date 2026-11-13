@@ -2,7 +2,7 @@
 
 The browser's "Binding self-tests" panel (src/backend/mujoco_env.js selfTest)
 checks the model and the bindings inside the WebAssembly build. This module runs
-the same checks with cvcpkg's native MuJoCo (the mujoco-core Python package),
+the same checks with cvcpkg's native MuJoCo (the mujoco3-cp312 Python package),
 so a failure in the page can be split into "the asset is wrong" (fails here
 too) and "the wasm binding call is wrong" (passes here). It also rolls the
 CT-RL model out under the demo sine gait (src/controllers/demo_gait.js), as a

@@ -2,7 +2,7 @@
 # reference controllers) built two ways.
 #   native      libtpht_core, the tpht-sim tool and the googletest suite
 #   emscripten  tpht_backend.{js,wasm}, the module the page's worker loads
-# Every dependency comes from cvcpkg: mujoco (native or wasm32), nlohmann-json,
+# Every dependency comes from cvcpkg: mujoco3 (native or wasm32), nlohmann-json,
 # googletest, cmake, ninja and, for the browser build, emsdk. See the README.
 cmake_minimum_required(VERSION 3.22)
 project(tpht_backend VERSION 0.1.0 LANGUAGES C CXX)
@@ -13,7 +13,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TPHT_BUILD_TESTS "Build the googletest suite (native only)" ON)
 
-find_package(mujoco 4.0 REQUIRED CONFIG)
+# The MuJoCo release the backend is built and tested against, matched exactly.
+# 3.17.0 (cvcpkg's mujoco3 package) because the team's models and policies were
+# trained on it, and an .mjb only loads in the version that wrote it. The C API
+# the backend uses is the same in 4.0.0: moving to MuJoCo 4 is 4.0.0 here (or
+# -DTPHT_MUJOCO_VERSION=4.0.0) with cvcpkg's `mujoco` package in place of
+# `mujoco3` (tests/fixtures/mujoco_reference.json has both versions' values).
+set(TPHT_MUJOCO_VERSION "3.17.0" CACHE STRING "MuJoCo version to build against (exact)")
+find_package(mujoco ${TPHT_MUJOCO_VERSION} EXACT REQUIRED CONFIG)
 find_package(nlohmann_json 3.11 REQUIRED CONFIG)
 
 add_library(tpht_core STATIC
@@ -83,7 +90,8 @@ else()
     add_executable(tpht_tests tests/numerics_test.cpp tests/sim_test.cpp)
     target_link_libraries(tpht_tests PRIVATE tpht_core GTest::gtest GTest::gtest_main)
     get_filename_component(_tpht_repo "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-    target_compile_definitions(tpht_tests PRIVATE TPHT_SOURCE_DIR="${_tpht_repo}")
+    target_compile_definitions(tpht_tests PRIVATE TPHT_SOURCE_DIR="${_tpht_repo}"
+                                                  TPHT_MUJOCO_VERSION="${TPHT_MUJOCO_VERSION}")
     if(MSVC)
       target_compile_options(tpht_tests PRIVATE /utf-8)
     endif()
